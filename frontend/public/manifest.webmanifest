@@ -1,0 +1,12 @@
+{
+  "name": "Visualizador de Ponches · César Iglesias",
+  "short_name": "Ponches CI",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fafafa",
+  "theme_color": "#C8102E",
+  "icons": [
+    { "src": "/logo-ci.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/logo-ci.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

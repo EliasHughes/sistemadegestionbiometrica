@@ -1,0 +1,80 @@
+[
+  {
+    "username": "admin",
+    "name": "Administrador",
+    "role": "super_admin",
+    "active": true,
+    "password": "pbkdf2_sha256$200000$cfb54ad7d544def2725c72b0be4621f8$cbde6ba1c9b8de7246fed8b754c28edeb350b984662f574a47248bc28843e0bf",
+    "permissions": {
+      "screens": {
+        "dashboard": true,
+        "records": true,
+        "db_records": true,
+        "remote_punch": true,
+        "devices": true,
+        "employees": true,
+        "collaborators": true,
+        "schedules": true,
+        "biometric_inventory": true,
+        "bulk_ops": true,
+        "reports": true,
+        "data_export": true,
+        "sync_history": true,
+        "users": true,
+        "settings": true
+      }
+    }
+  },
+  {
+    "username": "elias",
+    "name": "Elias",
+    "role": "super_admin",
+    "active": true,
+    "password": "pbkdf2_sha256$200000$a2a4c017fd535adf0288b49212fbd4dc$7c9edbfb7eefb9db2768dcb2eee146d2851ab0816f96b2d04d0235332e5ceb30",
+    "permissions": {
+      "screens": {
+        "dashboard": true,
+        "records": true,
+        "db_records": true,
+        "remote_punch": true,
+        "devices": true,
+        "employees": true,
+        "collaborators": true,
+        "schedules": true,
+        "biometric_inventory": true,
+        "bulk_ops": true,
+        "reports": true,
+        "data_export": true,
+        "sync_history": true,
+        "users": true,
+        "settings": true
+      }
+    }
+  },
+  {
+    "username": "supervisor",
+    "name": "Supervisor de Planta",
+    "role": "supervisor",
+    "active": true,
+    "password": "pbkdf2_sha256$200000$17eabda7c06b89c2cbc0c5acda43c34b$02ecaac6719ce372aa84050e485bddfcf0c89d393e18201a7d368fc647f4790d",
+    "permissions": {
+      "screens": {
+        "dashboard": true,
+        "records": true,
+        "db_records": false,
+        "remote_punch": false,
+        "devices": true,
+        "employees": true,
+        "collaborators": false,
+        "schedules": false,
+        "biometric_inventory": false,
+        "bulk_ops": false,
+        "reports": true,
+        "data_export": true,
+        "sync_history": false,
+        "users": false,
+        "settings": false
+      }
+    }
+  }
+]
