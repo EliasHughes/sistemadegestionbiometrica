@@ -1,9 +1,8 @@
-# backend/app/api/routes/records_query.py
 from datetime import date, datetime, time
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from app.core.deps import require_permission
 
+from app.core.deps import require_permission
 from app.services.audit import recent as load_audit
 from app.services.database import fetch_all, test_connection
 from app.services.sync_log import append_sync
@@ -16,7 +15,6 @@ def _require_db():
     if db["status"] != "online":
         raise HTTPException(status_code=503, detail=db["detail"])
     return db
-
 
 
 @router.get("/recent")
@@ -84,6 +82,7 @@ def punches_summary(_user: dict = Depends(require_permission("attendance.read"))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/ops-overview")
 def ops_overview(_user: dict = Depends(require_permission("attendance.read"))):
     empty = {
@@ -93,6 +92,7 @@ def ops_overview(_user: dict = Depends(require_permission("attendance.read"))):
         "by_dept": [],
         "sql_online": False,
     }
+
     db = test_connection()
     if db.get("status") != "online":
         empty["error"] = db.get("detail", "SQL offline")
@@ -111,6 +111,7 @@ def ops_overview(_user: dict = Depends(require_permission("attendance.read"))):
             """
         )
         t = today[0] if today else {}
+
         yesterday = fetch_all(
             """
             SELECT
@@ -121,6 +122,7 @@ def ops_overview(_user: dict = Depends(require_permission("attendance.read"))):
             """
         )
         y = yesterday[0] if yesterday else {}
+
         open_shifts = fetch_all(
             """
             SELECT TOP 20
@@ -135,6 +137,7 @@ def ops_overview(_user: dict = Depends(require_permission("attendance.read"))):
             ORDER BY entrada DESC
             """
         )
+
         by_dept = fetch_all(
             """
             SELECT TOP 12
@@ -146,6 +149,7 @@ def ops_overview(_user: dict = Depends(require_permission("attendance.read"))):
             ORDER BY COUNT(*) DESC
             """
         )
+
         return {
             "today": {
                 "total": int(t.get("total") or 0),
@@ -235,21 +239,27 @@ def search_punches(
     fecha: str | None = Query(None),
     dispositivo: str | None = Query(None),
     q: str = Query("", max_length=80),
+    _user: dict = Depends(require_permission("attendance.read")),
 ):
     _require_db()
     conditions: list[str] = []
     params: list = [int(limit)]
+
     if fecha:
         conditions.append("CAST(fecha AS date) = CAST(? AS date)")
         params.append(fecha)
+
     if dispositivo and dispositivo.strip().lower() != "todos":
         conditions.append("LTRIM(RTRIM(dispositivo_origen)) = ?")
         params.append(dispositivo.strip())
+
     if q.strip():
         conditions.append("(codigo LIKE ? OR ISNULL(nombre, '') LIKE ?)")
         like = f"%{q.strip()}%"
         params.extend([like, like])
+
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
     sql = f"""
         SELECT TOP (?)
             id, codigo, nombre, departamento, fecha, entrada, salida,
@@ -258,6 +268,7 @@ def search_punches(
         {where}
         ORDER BY fecha DESC, entrada DESC
     """
+
     try:
         rows = fetch_all(sql, tuple(params))
         try:
@@ -273,6 +284,7 @@ def search_punches(
 def punches_stats(_user: dict = Depends(require_permission("attendance.read"))):
     empty = {"by_device": [], "by_day": [], "by_hour": [], "activity": []}
     db = test_connection()
+
     if db.get("status") != "online":
         empty["error"] = db.get("detail", "SQL offline")
         return empty
@@ -283,7 +295,8 @@ def punches_stats(_user: dict = Depends(require_permission("attendance.read"))):
             SELECT TOP 20
                 LTRIM(RTRIM(dispositivo_origen)) AS name, COUNT(*) AS total
             FROM [dbo].[punches]
-            WHERE dispositivo_origen IS NOT NULL AND LTRIM(RTRIM(dispositivo_origen)) <> ''
+            WHERE dispositivo_origen IS NOT NULL
+              AND LTRIM(RTRIM(dispositivo_origen)) <> ''
             GROUP BY LTRIM(RTRIM(dispositivo_origen))
             ORDER BY COUNT(*) DESC
             """
@@ -309,7 +322,8 @@ def punches_stats(_user: dict = Depends(require_permission("attendance.read"))):
             """
             SELECT DATEPART(HOUR, CAST(entrada AS datetime)) AS hora, COUNT(*) AS total
             FROM [dbo].[punches]
-            WHERE CAST(fecha AS date) = CAST(GETDATE() AS date) AND entrada IS NOT NULL
+            WHERE CAST(fecha AS date) = CAST(GETDATE() AS date)
+              AND entrada IS NOT NULL
             GROUP BY DATEPART(HOUR, CAST(entrada AS datetime))
             ORDER BY hora
             """
@@ -323,8 +337,159 @@ def punches_stats(_user: dict = Depends(require_permission("attendance.read"))):
         activity = []
 
     return {
-        "by_device": [{"name": r.get("name") or "—", "total": int(r.get("total") or 0)} for r in by_device],
-        "by_day": [{"dia": str(r.get("dia") or ""), "total": int(r.get("total") or 0)} for r in by_day],
-        "by_hour": [{"hora": int(r.get("hora") or 0), "total": int(r.get("total") or 0)} for r in by_hour],
+        "by_device": [
+            {"name": r.get("name") or "—", "total": int(r.get("total") or 0)}
+            for r in by_device
+        ],
+        "by_day": [
+            {"dia": str(r.get("dia") or ""), "total": int(r.get("total") or 0)}
+            for r in by_day
+        ],
+        "by_hour": [
+            {"hora": int(r.get("hora") or 0), "total": int(r.get("total") or 0)}
+            for r in by_hour
+        ],
         "activity": activity,
     }
+
+
+@router.get("/dashboard-combined")
+def get_dashboard_combined(
+    _user: dict = Depends(require_permission("attendance.read")),
+):
+    """
+    Consolidado rápido para el Dashboard.
+
+    Importante:
+    La salud de dispositivos se mantiene en su endpoint dedicado porque
+    records_query.py no define una función get_device_health() ni conoce
+    el esquema real de la tabla de dispositivos.
+    """
+    db = _require_db()
+
+    try:
+        today = fetch_all(
+            """
+            SELECT
+                COUNT(*) AS total_hoy,
+                SUM(CASE WHEN entrada IS NOT NULL THEN 1 ELSE 0 END) AS con_entrada,
+                SUM(CASE WHEN salida IS NOT NULL THEN 1 ELSE 0 END) AS con_salida,
+                COUNT(DISTINCT codigo) AS empleados_hoy,
+                COUNT(DISTINCT dispositivo_origen) AS dispositivos_hoy
+            FROM [dbo].[punches]
+            WHERE CAST(fecha AS date) = CAST(GETDATE() AS date)
+            """
+        )
+        s = today[0] if today else {}
+
+        yesterday = fetch_all(
+            """
+            SELECT
+                COUNT(*) AS total,
+                COUNT(DISTINCT codigo) AS empleados
+            FROM [dbo].[punches]
+            WHERE CAST(fecha AS date) = CAST(DATEADD(day, -1, GETDATE()) AS date)
+            """
+        )
+        y = yesterday[0] if yesterday else {}
+
+        open_shifts = fetch_all(
+            """
+            SELECT TOP 20
+                codigo, nombre, dispositivo_origen,
+                CONVERT(varchar(8), entrada, 108) AS entrada
+            FROM [dbo].[punches]
+            WHERE CAST(fecha AS date) = CAST(GETDATE() AS date)
+              AND entrada IS NOT NULL
+              AND salida IS NULL
+            ORDER BY entrada DESC
+            """
+        )
+
+        by_dept = fetch_all(
+            """
+            SELECT TOP 12
+                ISNULL(NULLIF(LTRIM(RTRIM(departamento)), ''), 'Sin departamento') AS depto,
+                COUNT(*) AS total
+            FROM [dbo].[punches]
+            WHERE CAST(fecha AS date) = CAST(GETDATE() AS date)
+            GROUP BY ISNULL(NULLIF(LTRIM(RTRIM(departamento)), ''), 'Sin departamento')
+            ORDER BY COUNT(*) DESC
+            """
+        )
+
+        by_day = fetch_all(
+            """
+            SELECT CONVERT(varchar(10), CAST(fecha AS date), 23) AS dia,
+                   COUNT(*) AS total
+            FROM [dbo].[punches]
+            WHERE CAST(fecha AS date) >= DATEADD(day, -13, CAST(GETDATE() AS date))
+            GROUP BY CAST(fecha AS date)
+            ORDER BY CAST(fecha AS date)
+            """
+        )
+
+        by_hour = fetch_all(
+            """
+            SELECT DATEPART(HOUR, CAST(entrada AS datetime)) AS hora,
+                   COUNT(*) AS total
+            FROM [dbo].[punches]
+            WHERE CAST(fecha AS date) = CAST(GETDATE() AS date)
+              AND entrada IS NOT NULL
+            GROUP BY DATEPART(HOUR, CAST(entrada AS datetime))
+            ORDER BY hora
+            """
+        )
+
+        recent = fetch_all(
+            """
+            SELECT TOP (10)
+                id, codigo, nombre, departamento, entrada, salida, dispositivo_origen
+            FROM [dbo].[punches]
+            ORDER BY fecha DESC, entrada DESC
+            """
+        )
+
+        return {
+            "summary": {
+                "date": "today",
+                "total_hoy": int(s.get("total_hoy") or 0),
+                "con_entrada": int(s.get("con_entrada") or 0),
+                "con_salida": int(s.get("con_salida") or 0),
+                "empleados_hoy": int(s.get("empleados_hoy") or 0),
+                "dispositivos_hoy": int(s.get("dispositivos_hoy") or 0),
+                "database": db,
+            },
+            "overview": {
+                "today": {
+                    "total": int(s.get("total_hoy") or 0),
+                    "empleados": int(s.get("empleados_hoy") or 0),
+                    "relojes": int(s.get("dispositivos_hoy") or 0),
+                    "sin_salida": len(open_shifts or []),
+                },
+                "yesterday": {
+                    "total": int(y.get("total") or 0),
+                    "empleados": int(y.get("empleados") or 0),
+                },
+                "open_shifts": open_shifts or [],
+                "by_dept": by_dept or [],
+                "sql_online": True,
+            },
+            "stats": {
+                "by_device": [],
+                "by_day": [
+                    {"dia": str(r.get("dia") or ""), "total": int(r.get("total") or 0)}
+                    for r in by_day
+                ],
+                "by_hour": [
+                    {"hora": int(r.get("hora") or 0), "total": int(r.get("total") or 0)}
+                    for r in by_hour
+                ],
+                "activity": [],
+            },
+            "recent": recent or [],
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
