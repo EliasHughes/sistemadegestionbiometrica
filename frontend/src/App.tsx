@@ -19,6 +19,7 @@ import Settings from "./pages/Settings";
 import SqlHistory from "./pages/SqlHistory";
 import Inventory from "./pages/Inventory";
 import AdvancedReports from "./pages/AdvancedReports"
+import Fiorella from "./components/layout/Fiorella";
 
 function App() {
   const { user, isAuthenticated, ready, login, logout } = useAuth();
@@ -27,8 +28,13 @@ function App() {
     return <div className="min-h-screen grid place-items-center text-zinc-500 text-sm">Cargando sesión...</div>;
   }
 
-  if (!isAuthenticated || !user) {
-    return <Login onLoginSuccess={login} />;
+ if (!isAuthenticated || !user) {
+    return (
+      <>
+        <Login onLoginSuccess={login} />
+        <Fiorella />
+      </>
+    );
   }
 
   return (
@@ -52,11 +58,13 @@ function App() {
           <Route path="users" element={<ProtectedRoute user={user} screen="users"><UsersAdmin /></ProtectedRoute>} />
           <Route path="settings" element={<ProtectedRoute user={user} screen="settings"><Settings /></ProtectedRoute>} />
           <Route path="advanced-reports" element={<ProtectedRoute user={user} screen="advanced_reports"><AdvancedReports /></ProtectedRoute>} />
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
-          
+          <Route path="*" element={<Navigate to="/dashboard" replace />} />          
         </Route>
       </Routes>
+      <Fiorella />
     </BrowserRouter>
+   
+    
   );
 }
 

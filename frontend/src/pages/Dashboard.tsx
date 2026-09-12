@@ -1,7 +1,18 @@
-// frontend/src/pages/Dashboard.tsx
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import {
+  Activity,
+  AlertTriangle,
+  CheckCircle2,
+  Clock3,
+  Download,
+  RefreshCw,
+  Shield,
+  Smartphone,
+  Users,
+} from "lucide-react";
 import { authFetch } from "../lib/api";
+import { Btn, PageHeader, Panel } from "../ui/kit";
 
 type Summary = {
   total_hoy: number;
@@ -10,26 +21,24 @@ type Summary = {
   empleados_hoy: number;
   dispositivos_hoy: number;
 };
-
 type Stats = {
   by_device: { name: string; total: number }[];
   by_day: { dia: string; total: number }[];
   by_hour: { hora: number; total: number }[];
   activity: { timestamp: string; actor: string; action: string; target: string }[];
 };
-
 type Overview = {
   today: { total: number; empleados: number; relojes: number; sin_salida: number };
   yesterday: { total: number; empleados: number };
-  open_shifts: {
-    codigo: string;
-    nombre?: string;
-    dispositivo_origen?: string;
-    entrada?: string;
-  }[];
+  open_shifts: { codigo: string; nombre?: string; dispositivo_origen?: string; entrada?: string }[];
   by_dept: { depto: string; total: number }[];
 };
-
+type HealthItem = {
+  name: string;
+  online?: boolean;
+  latency_ms?: number | null;
+  punches_today?: number;
+};
 type PunchRow = {
   id: number;
   codigo: string;
@@ -38,73 +47,43 @@ type PunchRow = {
   dispositivo_origen: string | null;
 };
 
-const ACTION_LABEL: Record<string, string> = {
-  login: "Inicio de sesión",
-  login_ok: "Inicio de sesión",
-  remote_punch: "Ponche remoto",
-  clone_user: "Usuario copiado",
-  sync_collaborator: "Sync a reloj",
-  change_password: "Cambio de contraseña",
-};
-
-function delta(today: number, yesterday: number) {
-  if (!yesterday) return today ? "+100%" : "0%";
-  const p = ((today - yesterday) / yesterday) * 100;
-  return `${p >= 0 ? "+" : ""}${p.toFixed(0)}% vs ayer`;
-}
-
-function LineChart({ points }: { points: { label: string; value: number }[] }) {
-  const w = 560;
-  const h = 180;
-  const pad = 24;
-  const max = Math.max(1, ...points.map((p) => p.value));
-  const coords = points.map((p, i) => {
-    const x = pad + (i * (w - pad * 2)) / Math.max(points.length - 1, 1);
-    const y = h - pad - (p.value / max) * (h - pad * 2);
-    return `${x},${y}`;
-  });
-  if (!points.length) return <p className="text-xs text-zinc-400">Sin serie</p>;
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-44">
-      <defs>
-        <linearGradient id="redFade" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#c8102e" />
-          <stop offset="100%" stopColor="#c8102e" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <polygon fill="url(#redFade)" opacity="0.25" points={`${pad},${h - pad} ${coords.join(" ")} ${w - pad},${h - pad}`} />
-      <polyline fill="none" stroke="#c8102e" strokeWidth="2.5" points={coords.join(" ")} />
-    </svg>
-  );
+function delta(now: number, prev: number) {
+  if (!prev) return "sin base ayer";
+  const pct = Math.round(((now - prev) / prev) * 100);
+  return `${pct > 0 ? "+" : ""}${pct}% vs ayer`;
 }
 
 export default function Dashboard() {
-  const navigate = useNavigate();
+  const nav = useNavigate();
   const [summary, setSummary] = useState<Summary | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [recent, setRecent] = useState<PunchRow[]>([]);
+  const [health, setHealth] = useState<{ total: number; online: number; offline: number; items: HealthItem[] } | null>(null);
+  const [syncItems, setSyncItems] = useState<{ fecha?: string; evento?: string; estado?: string }[]>([]);
+  const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
 
   const load = async () => {
     setLoading(true);
-    setError("");
+    setErr("");
     try {
-      const [sRes, stRes, rRes, oRes] = await Promise.all([
+      const [s, st, r, o, h, sy] = await Promise.all([
         authFetch("/api/records/summary"),
         authFetch("/api/records/stats"),
         authFetch("/api/records/recent?limit=8"),
         authFetch("/api/records/ops-overview"),
+        authFetch("/api/records/device-health"),
+        authFetch("/api/records/sync-history?limit=8"),
       ]);
-      if (!sRes.ok) throw new Error("No se pudo cargar el resumen");
-      setSummary(await sRes.json());
-      setStats(stRes.ok ? await stRes.json() : { by_device: [], by_day: [], by_hour: [], activity: [] });
-      const rec = rRes.ok ? await rRes.json() : { items: [] };
-      setRecent(rec.items || []);
-      setOverview(oRes.ok ? await oRes.json() : null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Error de conexión");
+      if (s.ok) setSummary(await s.json());
+      if (st.ok) setStats(await st.json());
+      if (r.ok) setRecent((await r.json()).items || []);
+      if (o.ok) setOverview(await o.json());
+      if (h.ok) setHealth(await h.json());
+      if (sy.ok) setSyncItems((await sy.json()).items || []);
+    } catch {
+      setErr("No se pudo refrescar el tablero");
     } finally {
       setLoading(false);
     }
@@ -112,244 +91,221 @@ export default function Dashboard() {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 60000);
-    return () => clearInterval(t);
+    const id = setInterval(load, 60000);
+    return () => clearInterval(id);
   }, []);
 
-  const dayPoints = useMemo(
-    () => (stats?.by_day || []).map((d) => ({ label: String(d.dia).slice(5), value: Number(d.total || 0) })),
-    [stats]
-  );
-  const hourPoints = useMemo(
-    () =>
-      Array.from({ length: 24 }, (_, h) => ({
-        label: `${String(h).padStart(2, "0")}`,
-        value: Number(stats?.by_hour.find((x) => Number(x.hora) === h)?.total || 0),
-      })),
-    [stats]
-  );
-  const maxHour = Math.max(1, ...hourPoints.map((p) => p.value));
-  const maxDev = Math.max(1, ...(stats?.by_device || []).map((d) => Number(d.total || 0)));
-  const maxDept = Math.max(1, ...(overview?.by_dept || []).map((d) => Number(d.total || 0)));
+  const presentes = overview?.today.empleados ?? summary?.empleados_hoy ?? 0;
+  const ponches = overview?.today.total ?? summary?.total_hoy ?? 0;
+  const abiertos = overview?.today.sin_salida ?? 0;
+  const offline = health?.offline ?? 0;
+  const online = health?.online ?? 0;
+  const totalDev = Math.max(1, health?.total ?? 1);
+  const onlinePct = Math.round((online / totalDev) * 100);
+
+  const status = useMemo(() => {
+    if (offline >= 8 || abiertos > 80) return { label: "Crítico", cls: "bg-rose-600", pct: 48 };
+    if (offline >= 3 || abiertos > 20) return { label: "Atención", cls: "bg-amber-500", pct: 70 };
+    return { label: "Normal", cls: "bg-emerald-600", pct: 92 };
+  }, [offline, abiertos]);
+
+  const peakHour = useMemo(() => {
+    const rows = stats?.by_hour || [];
+    if (!rows.length) return "—";
+    const top = [...rows].sort((a, b) => b.total - a.total)[0];
+    return `${String(top.hora).padStart(2, "0")}:00`;
+  }, [stats]);
+
+  const healthScore = useMemo(() => {
+    const zk = health ? onlinePct : 50;
+    const db = summary ? 100 : 40;
+    const syncOk = syncItems[0]?.estado === "ok" ? 100 : 72;
+    const att = abiertos > 100 ? 55 : 88;
+    return Math.round(zk * 0.35 + db * 0.2 + syncOk * 0.2 + att * 0.25);
+  }, [health, summary, syncItems, abiertos, onlinePct]);
+
+  const maxDay = Math.max(1, ...(stats?.by_day || []).map((d) => d.total));
+  const maxHour = Math.max(1, ...(stats?.by_hour || []).map((d) => d.total));
+  const maxDept = Math.max(1, ...(overview?.by_dept || []).map((d) => d.total));
 
   const kpis = [
-    {
-      label: "Ponches hoy",
-      value: overview?.today.total ?? summary?.total_hoy,
-      hint: delta(overview?.today.total || 0, overview?.yesterday.total || 0),
-      to: "/records",
-    },
-    {
-      label: "Empleados hoy",
-      value: overview?.today.empleados ?? summary?.empleados_hoy,
-      hint: `${summary?.con_entrada ?? 0} in · ${summary?.con_salida ?? 0} out`,
-      to: "/collaborators",
-    },
-    {
-      label: "Relojes con marca",
-      value: overview?.today.relojes ?? summary?.dispositivos_hoy,
-      hint: stats?.by_device?.[0]?.name || "Sin ranking",
-      to: "/devices",
-    },
-    {
-      label: "Turnos abiertos",
-      value: overview?.today.sin_salida ?? 0,
-      hint: "Entrada sin salida hoy",
-      to: "/records",
-      warn: (overview?.today.sin_salida || 0) > 0,
-    },
+    { label: "Colaboradores hoy", value: presentes, hint: delta(presentes, overview?.yesterday.empleados || 0), to: "/collaborators", cls: "kpi-red", icon: Users },
+    { label: "Con entrada", value: summary?.con_entrada ?? ponches, hint: `${summary?.con_salida ?? 0} ya salieron`, to: "/records", cls: "kpi-emerald", icon: CheckCircle2 },
+    { label: "Turnos abiertos", value: abiertos, hint: "Entrada sin salida", to: "/records", cls: "kpi-amber", icon: Clock3 },
+    { label: "Relojes online", value: online, hint: `${offline} offline`, to: "/devices", cls: "kpi-sky", icon: Smartphone },
+    { label: "Ponches hoy", value: ponches, hint: delta(ponches, overview?.yesterday.total || 0), to: "/records", cls: "kpi-violet", icon: Activity },
+    { label: "Pico horario", value: peakHour, hint: "Mayor tráfico", to: "/records", cls: "kpi-slate", icon: Clock3 },
   ];
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-red-700">
-            César Iglesias
-          </p>
-          <h2 className="text-xl font-bold">Dashboard operativo</h2>
-          <p className="text-sm text-zinc-500">Hoy vs ayer · huecos de salida · actividad · 60s</p>
+    <div className="space-y-5 page-enter">
+      <PageHeader
+        kicker="Centro de control"
+        title="Dashboard operativo"
+        subtitle="Asistencia · relojes · sync · actividad"
+        actions={
+          <>
+            <Btn tone="ghost" onClick={() => nav("/export")}><Download size={16} /> Exportar</Btn>
+            <Btn tone="primary" onClick={load} disabled={loading}>
+              <RefreshCw size={16} className={loading ? "animate-spin" : ""} /> Actualizar
+            </Btn>
+          </>
+        }
+      />
+
+      {err ? <p className="text-sm text-rose-700 bg-rose-50 rounded-xl px-3 py-2">{err}</p> : null}
+
+      <div className="flex items-center gap-3">
+        <span className={`text-white text-xs font-bold px-3 py-1 rounded-full ${status.cls}`}>{status.label}</span>
+        <div className="flex-1 h-2.5 rounded-full bg-zinc-200 overflow-hidden">
+          <div className={`h-full ${status.cls} transition-all duration-700`} style={{ width: `${status.pct}%` }} />
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => navigate("/export")}
-            className="text-sm font-semibold px-3 py-1.5 rounded-lg border border-zinc-200"
-          >
-            Exportar
-          </button>
-          <button
-            onClick={load}
-            disabled={loading}
-            className="text-sm font-semibold px-3 py-1.5 rounded-lg bg-red-600 text-white"
-          >
-            {loading ? "Actualizando..." : "Actualizar"}
-          </button>
-        </div>
+        <span className="text-xs text-zinc-500">operación {status.pct}%</span>
       </div>
 
-      {error && (
-        <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-sm text-rose-700">
-          {error}
-        </div>
-      )}
-
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-        {kpis.map((kpi) => (
-          <button
-            key={kpi.label}
-            type="button"
-            onClick={() => navigate(kpi.to)}
-            className={`rounded-2xl p-5 text-left border ${
-              kpi.warn ? "bg-amber-50 border-amber-200" : "bg-white border-zinc-200"
-            }`}
-          >
-            <p className="text-[11px] font-semibold text-zinc-500 uppercase">{kpi.label}</p>
-            <p className="text-2xl font-bold mt-2 tabular-nums">
-              {typeof kpi.value === "number" ? kpi.value.toLocaleString() : kpi.value ?? "—"}
-            </p>
-            <p className="text-[11px] text-zinc-500 mt-1">{kpi.hint}</p>
+      <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3">
+        {kpis.map((k) => (
+          <button key={k.label} type="button" onClick={() => nav(k.to)} className={`kpi-tile btn-modern ${k.cls}`}>
+            <span className="shine" />
+            <div className="flex items-center justify-between text-white/80">
+              <span className="text-[11px] uppercase tracking-wide font-semibold">{k.label}</span>
+              <k.icon size={18} />
+            </div>
+            <p className="text-3xl font-black mt-2">{k.value}</p>
+            <p className="text-xs text-white/80 mt-1">{k.hint}</p>
           </button>
         ))}
       </div>
 
       <div className="grid lg:grid-cols-5 gap-4">
-        <button
-          type="button"
-          onClick={() => navigate("/db-records")}
-          className="lg:col-span-3 bg-white border border-zinc-200 rounded-2xl p-5 text-left"
-        >
-          <h3 className="text-sm font-bold mb-2">Tendencia 14 días</h3>
-          <LineChart points={dayPoints} />
-        </button>
-        <div className="lg:col-span-2 bg-white border border-zinc-200 rounded-2xl p-5">
-          <h3 className="text-sm font-bold mb-2">Por hora (hoy)</h3>
-          <div className="flex items-end gap-1 h-40">
-            {hourPoints.map((p) => (
-              <div key={p.label} className="flex-1 flex flex-col items-center justify-end h-full">
+        <Panel className="lg:col-span-2">
+          <h3 className="font-bold text-sm mb-3 flex items-center gap-2">
+            <AlertTriangle size={16} className="text-[#c8102e]" /> Alertas
+          </h3>
+          <div className="space-y-2">
+            {offline ? (
+              <button type="button" onClick={() => nav("/devices")} className="w-full text-left rounded-xl px-3 py-2 bg-rose-50 text-rose-800 text-sm">
+                {offline} relojes sin ping
+              </button>
+            ) : null}
+            {abiertos ? (
+              <button type="button" onClick={() => nav("/records")} className="w-full text-left rounded-xl px-3 py-2 bg-amber-50 text-amber-900 text-sm">
+                {abiertos} turnos abiertos
+              </button>
+            ) : null}
+            {!offline && !abiertos ? <p className="text-sm text-emerald-700">Sin alertas prioritarias</p> : null}
+          </div>
+        </Panel>
+
+        <Panel className="lg:col-span-3">
+          <h3 className="font-bold text-sm mb-3">Tendencia de ponches</h3>
+          <div className="flex items-end gap-1.5 h-36">
+            {(stats?.by_day || []).map((d) => (
+              <div key={d.dia} className="flex-1 flex flex-col items-center gap-1 h-full justify-end">
+                <span className="text-[10px] text-zinc-500">{d.total}</span>
                 <div
-                  className="w-full max-w-[12px] rounded-t bg-red-600"
-                  title={`${p.label}:00 · ${p.value}`}
-                  style={{ height: `${Math.max(3, (p.value / maxHour) * 100)}%` }}
+                  className="w-full rounded-t-lg bg-gradient-to-t from-[#9f1239] to-[#fb7185]"
+                  style={{ height: `${Math.max(10, (d.total / maxDay) * 100)}%` }}
+                  title={`${d.dia}: ${d.total}`}
                 />
               </div>
             ))}
           </div>
-        </div>
+        </Panel>
       </div>
 
       <div className="grid lg:grid-cols-3 gap-4">
-        <div className="bg-white border border-zinc-200 rounded-2xl p-5">
-          <div className="flex justify-between mb-3">
-            <h3 className="text-sm font-bold">Ranking de relojes</h3>
-            <button className="text-[11px] font-semibold text-red-700" onClick={() => navigate("/devices")}>
-              Ver
-            </button>
-          </div>
-          <div className="space-y-2.5">
-            {(stats?.by_device || []).slice(0, 8).map((d) => (
-              <div key={d.name}>
-                <div className="flex justify-between text-[11px] mb-0.5">
-                  <span className="truncate pr-2">{d.name}</span>
-                  <span className="font-semibold tabular-nums">{Number(d.total).toLocaleString()}</span>
-                </div>
-                <div className="h-2 rounded-full bg-zinc-100 overflow-hidden">
-                  <div
-                    className="h-full bg-red-600 rounded-full"
-                    style={{ width: `${(Number(d.total) / maxDev) * 100}%` }}
-                  />
-                </div>
+        <Panel>
+          <h3 className="font-bold text-sm mb-3">Disponibilidad ZK</h3>
+          <div className="flex items-center gap-4">
+            <div
+              className="donut"
+              style={{ background: `conic-gradient(#059669 0 ${onlinePct}%, #e4e4e7 ${onlinePct}% 100%)` }}
+            >
+              <div className="donut-hole">
+                <b className="text-lg">{onlinePct}%</b>
+                <span className="text-[10px] text-zinc-500">online</span>
               </div>
-            ))}
+            </div>
+            <div className="text-sm space-y-1">
+              <p className="text-emerald-700 font-semibold">{online} en línea</p>
+              <p className="text-zinc-500">{offline} offline</p>
+              <p className="text-zinc-500">{health?.total ?? 0} inventariados</p>
+            </div>
           </div>
-        </div>
+        </Panel>
 
-        <div className="bg-white border border-zinc-200 rounded-2xl p-5">
-          <h3 className="text-sm font-bold mb-3">Departamentos hoy</h3>
-          <div className="space-y-2.5">
-            {(overview?.by_dept || []).map((d) => (
-              <div key={d.depto}>
-                <div className="flex justify-between text-[11px] mb-0.5">
-                  <span>{d.depto}</span>
-                  <span className="font-semibold">{Number(d.total).toLocaleString()}</span>
-                </div>
-                <div className="h-2 rounded-full bg-zinc-100 overflow-hidden">
-                  <div
-                    className="h-full bg-zinc-800 rounded-full"
-                    style={{ width: `${(Number(d.total) / maxDept) * 100}%` }}
-                  />
-                </div>
-              </div>
-            ))}
-            {!overview?.by_dept?.length && <p className="text-sm text-zinc-400">Sin datos de hoy</p>}
+        <Panel>
+          <h3 className="font-bold text-sm mb-3">Tráfico por hora</h3>
+          <div className="flex items-end gap-[3px] h-28">
+            {Array.from({ length: 24 }, (_, h) => {
+              const t = stats?.by_hour?.find((x) => x.hora === h)?.total || 0;
+              return (
+                <div
+                  key={h}
+                  className="flex-1 rounded-t bg-gradient-to-t from-sky-700 to-sky-400"
+                  style={{ height: `${Math.max(4, (t / maxHour) * 100)}%` }}
+                  title={`${h}:00 · ${t}`}
+                />
+              );
+            })}
           </div>
-        </div>
+        </Panel>
 
-        <div className="bg-white border border-zinc-200 rounded-2xl overflow-hidden">
-          <div className="px-5 py-3 border-b border-zinc-100 text-sm font-bold">
-            Entrada sin salida
-          </div>
-          <div className="divide-y divide-zinc-100 max-h-72 overflow-auto">
-            {(overview?.open_shifts || []).map((item, i) => (
-              <div key={`${item.codigo}-${i}`} className="px-5 py-3">
-                <p className="text-sm font-medium truncate">{item.nombre || item.codigo}</p>
-                <p className="text-[11px] text-zinc-500">
-                  {String(item.entrada || "").slice(0, 8)} · {item.dispositivo_origen || "—"}
-                </p>
-              </div>
+        <Panel>
+          <h3 className="font-bold text-sm mb-3">Departamentos</h3>
+          <ul className="space-y-2">
+            {(overview?.by_dept || []).slice(0, 6).map((d) => (
+              <li key={d.depto}>
+                <div className="flex justify-between text-xs mb-1">
+                  <span className="truncate">{d.depto || "Sin depto"}</span>
+                  <span className="font-semibold">{d.total}</span>
+                </div>
+                <div className="h-1.5 bg-zinc-100 rounded-full overflow-hidden">
+                  <div className="h-full bg-violet-500 rounded-full" style={{ width: `${(d.total / maxDept) * 100}%` }} />
+                </div>
+              </li>
             ))}
-            {!overview?.open_shifts?.length && (
-              <p className="px-5 py-6 text-sm text-zinc-400">No hay turnos abiertos</p>
-            )}
-          </div>
-        </div>
+          </ul>
+        </Panel>
       </div>
 
       <div className="grid lg:grid-cols-2 gap-4">
-        <div className="bg-white border border-zinc-200 rounded-2xl overflow-hidden">
-          <div className="px-5 py-3 border-b border-zinc-100 flex justify-between">
-            <h3 className="text-sm font-bold">Últimos ponches</h3>
-            <button className="text-[11px] font-semibold text-red-700" onClick={() => navigate("/records")}>
-              Abrir
-            </button>
+        <Panel>
+          <div className="flex justify-between mb-3">
+            <h3 className="font-bold text-sm">Relojes</h3>
+            <button type="button" className="text-xs text-[#c8102e] font-semibold" onClick={() => nav("/devices")}>Ver</button>
           </div>
-          <div className="divide-y divide-zinc-100">
-            {recent.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => navigate("/records")}
-                className="w-full px-5 py-3 flex gap-3 text-left hover:bg-zinc-50"
-              >
-                <span className="text-xs font-mono text-zinc-500 w-16">
-                  {item.entrada ? String(item.entrada).slice(0, 8) : "—"}
+          <ul className="space-y-1 max-h-52 overflow-auto">
+            {(health?.items || []).slice(0, 10).map((d) => (
+              <li key={d.name} className="flex justify-between text-sm py-1 border-b border-zinc-50">
+                <span className="truncate pr-2">{d.name}</span>
+                <span className={d.online ? "text-emerald-600 text-xs font-semibold" : "text-zinc-400 text-xs"}>
+                  {d.online ? `${d.latency_ms ?? "—"} ms` : "offline"}
                 </span>
-                <div className="min-w-0">
-                  <p className="text-sm font-medium truncate">{item.nombre || item.codigo}</p>
-                  <p className="text-[11px] text-zinc-500 truncate">{item.dispositivo_origen || "—"}</p>
-                </div>
-              </button>
+              </li>
             ))}
-            {recent.length === 0 && <p className="px-5 py-6 text-sm text-zinc-400">Sin marcas recientes</p>}
-          </div>
-        </div>
-
-        <div className="bg-white border border-zinc-200 rounded-2xl overflow-hidden">
-          <div className="px-5 py-3 border-b border-zinc-100 text-sm font-bold">Auditoría de la app</div>
-          <div className="divide-y divide-zinc-100 max-h-80 overflow-auto">
-            {(stats?.activity || []).map((a, i) => (
-              <div key={`${a.timestamp}-${i}`} className="px-5 py-3">
-                <p className="text-sm font-medium">{ACTION_LABEL[a.action] || a.action}</p>
-                <p className="text-[11px] text-zinc-500">
-                  {a.timestamp} · {a.actor} · {a.target}
-                </p>
-              </div>
+          </ul>
+        </Panel>
+        <Panel>
+          <h3 className="font-bold text-sm mb-3">Actividad reciente</h3>
+          <ul className="space-y-2">
+            {recent.map((p) => (
+              <li key={p.id} className="text-sm flex justify-between gap-2">
+                <span className="truncate font-medium">{p.nombre || p.codigo}</span>
+                <span className="text-xs text-zinc-500">{p.entrada}</span>
+              </li>
             ))}
-            {!stats?.activity?.length && (
-              <p className="px-5 py-6 text-sm text-zinc-400">Sin movimientos aún</p>
-            )}
-          </div>
-        </div>
+          </ul>
+        </Panel>
       </div>
+
+      <footer className="flex flex-wrap items-center justify-between text-xs text-zinc-500">
+        <span className="inline-flex items-center gap-2">
+          <Shield size={14} /> Health Score <b className="text-zinc-800 text-sm">{healthScore}</b>/100
+        </span>
+        <span>Rojo / verde / ámbar / azul = clic a módulo</span>
+      </footer>
     </div>
   );
 }

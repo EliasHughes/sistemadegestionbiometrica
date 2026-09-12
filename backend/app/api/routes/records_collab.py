@@ -1,11 +1,9 @@
-# backend/app/api/routes/records_collab.py
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.deps import require_permission
 from app.core.safety import assert_live, preview
 from pydantic import BaseModel
-
 
 from app.services.database import fetch_all
 from app.api.routes.records_shared import COLLAB_FILE, DEVICES_FILE, read_json, write_json
@@ -20,15 +18,15 @@ class CollabFull(BaseModel):
     departamento: str = ""
     cargo: str = ""
     activo: bool = True
-    dispositivos: list[str] = []
+    dispositivos: list[str] | str = []
     notas: str = ""
     rfid: str = ""
     password_device: str = ""
     has_fingerprint: bool = False
     has_face: bool = False
-    card_no: str = ""
-    privilege: int = 0
-    schedule_id: str = ""
+    card_no: str | int = ""
+    privilege: int | str = 0
+    schedule_id: str | int = ""
     reloj_oficina: str = ""
 
     @classmethod
@@ -267,7 +265,6 @@ def collaborator_detail(codigo: str, _user: dict = Depends(require_permission("c
             })
     return {"profile": profile, "clocks": clocks}
 
-# Agregar en backend/app/api/routes/records_collab.py (después de la función collaborator_detail)
 
 @router.get("/collab-reconcile")
 def collab_reconcile(
@@ -424,6 +421,7 @@ def collaborator_delete(body: DeleteCollabIn, user: dict = Depends(require_permi
         pass
     return {**deleted, "clocks": zk}
 
+
 class ReconcileApplyIn(BaseModel):
     codigo: str
     dry_run: bool = True
@@ -433,7 +431,7 @@ class ReconcileApplyIn(BaseModel):
 @router.post("/collab-reconcile/apply")
 def collab_reconcile_apply(
     body: ReconcileApplyIn,
-    user: dict = Depends(require_permission("collaborators.write")),
+    user: dict = Depends(require_permission("collaborators.sync")),
 ):
     from app.core.safety import assert_live, preview
     from app.services.zk_devices import clone_user

@@ -58,7 +58,12 @@ export type OperationKey =
   | "zk.enroll"
   | "zk.delete"
   | "zk.push"
-  | "zk.sync";
+  | "zk.sync"
+  | "reports.read"
+  | "exports.read"
+  | "settings.read"
+  | "sync.read"
+  | "sync.run";
 
 /** Definición de cada módulo (para el menú y control de acceso) */
 export type ModuleDef = {

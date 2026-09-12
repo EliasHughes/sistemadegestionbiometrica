@@ -7,7 +7,7 @@ from app.services.json_store import data_path, read_json
 from app.services.zk_devices import find_device, load_devices
 
 from app.core.safety import MutationFlags, assert_live, preview
-from app.services.zk_devices import clone_user, delete_user_on_device, find_device, set_user_on_device
+from app.services.zk_devices import clone_user, delete_user_on_device, set_user_on_device
 
 router = APIRouter(
     prefix="/records",
@@ -165,6 +165,7 @@ def collab_push(body: PushIn, _user: dict = Depends(require_permission("zk.push"
     targets = [str(n).strip() for n in (body.dispositivos or []) if str(n).strip()]
     if not targets:
         raise HTTPException(status_code=400, detail="Marca al menos un reloj")
+
     results = []
     for name in targets:
         try:
@@ -173,34 +174,25 @@ def collab_push(body: PushIn, _user: dict = Depends(require_permission("zk.push"
             results.append({"device": name, "ok": False, "error": f"ficha: {e}"})
             continue
         dev = _clock(name)
-        if not dev:
-            results.append({"device": name, "ok": False, "error": "sin IP / no está en inventario"})
+        if not dev or not str(dev.get("ip") or "").strip():
+            results.append({"device": name, "ok": False, "error": "sin IP"})
             continue
-        conn = None
         try:
-            conn = _connect(dev)
-            card_raw = str(profile.get("card_no") or profile.get("rfid") or "0")
-            card = int(card_raw) if card_raw.isdigit() else 0
-            user = _ensure_user(
-                conn,
-                str(profile.get("codigo")),
-                profile.get("nombre") or str(profile.get("codigo")),
-                profile.get("password_device") or "",
-                card,
-            )
-            results.append(
+            zk = set_user_on_device(
+                dev,
                 {
-                    "device": name,
-                    "ok": True,
-                    "mode": "live",
-                    "uid": getattr(user, "uid", None) if user else None,
-                }
+                    "codigo": profile.get("codigo"),
+                    "nombre": profile.get("nombre"),
+                    "password": profile.get("password_device") or "",
+                    "card": profile.get("card_no") or profile.get("rfid") or 0,
+                },
+                dry_run=False,
             )
+            results.append({"device": name, **zk})
         except Exception as e:
             results.append({"device": name, "ok": False, "error": str(e)})
-        finally:
-            _close(conn)
-    return {"ok": True, "results": results}
+
+    return {"ok": True, "mode": "live", "results": results}
 
 
 @router.post("/collab-clone")
@@ -223,96 +215,17 @@ def collab_clone(body: CloneIn, _user: dict = Depends(require_permission("zk.clo
     if not dest_names:
         raise HTTPException(status_code=400, detail="Elige al menos un reloj destino")
 
-    src_conn = None
-    try:
-        src_conn = _connect(src)
-        users = src_conn.get_users() or []
-        src_user = next((u for u in users if str(u.user_id) == codigo), None)
-        if not src_user:
-            raise HTTPException(status_code=404, detail=f"{codigo} no está en {body.from_device}")
-        templates = _templates_of(src_conn, codigo, getattr(src_user, "uid", None))
-        snapshot = {
-            "codigo": codigo,
-            "nombre": (getattr(src_user, "name", None) or codigo)[:24],
-            "password": getattr(src_user, "password", "") or "",
-            "card": int(getattr(src_user, "card", 0) or 0),
-            "privilege": int(getattr(src_user, "privilege", 0) or 0),
-            "uid": getattr(src_user, "uid", None),
-            "fingers": templates,
-        }
-    finally:
-        _close(src_conn)
-
-    try:
-        copy_to_device(codigo, body.from_device)
-        for n in dest_names:
-            copy_to_device(codigo, n)
-        upsert_collab(
-            {
-                "codigo": codigo,
-                "nombre": snapshot["nombre"],
-                "card_no": snapshot["card"],
-                "password_device": snapshot["password"],
-                "has_fingerprint": len(snapshot["fingers"]) > 0,
-                "dispositivos": [body.from_device] + dest_names,
-            }
-        )
-    except Exception:
-        pass
-
-    results = [
-        {
-            "device": body.from_device,
-            "ok": True,
-            "role": "source",
-            "fingers_copied": len(snapshot["fingers"]),
-            "fingers_source": len(snapshot["fingers"]),
-        }
-    ]
+    results = []
     for name in dest_names:
-        dev = _clock(name)
-        if not dev:
+        dst = _clock(name)
+        if not dst:
             results.append({"device": name, "ok": False, "error": "sin IP"})
             continue
-        conn = None
         try:
-            conn = _connect(dev)
-            dest_user = _ensure_user(
-                conn,
-                codigo,
-                snapshot["nombre"],
-                snapshot["password"],
-                snapshot["card"],
-            )
-            if not dest_user:
-                results.append({"device": name, "ok": False, "error": "no se creó el usuario"})
-                continue
-            dest_uid = getattr(dest_user, "uid", None)
-            copied = 0
-            err = ""
-            if snapshot["fingers"] and dest_uid is not None:
-                for item in snapshot["fingers"]:
-                    try:
-                        f = _as_finger(dest_uid, item["fid"], item["blob"])
-                        conn.save_user_template(dest_user, [f])
-                        copied += 1
-                    except Exception as e2:
-                        err = f"{err} | {e2}" if err else str(e2)
-            results.append(
-                {
-                    "device": name,
-                    "ok": True,
-                    "mode": "live",
-                    "fingers_copied": copied,
-                    "fingers_source": len(snapshot["fingers"]),
-                    "finger_errors": err[:300],
-                    "dest_uid": dest_uid,
-                }
-            )
+            res = clone_user(src, dst, codigo, dry_run=False)
+            results.append({"device": name, **res})
         except Exception as e:
             results.append({"device": name, "ok": False, "error": str(e)})
-        finally:
-            _close(conn)
 
     return {"ok": True, "codigo": codigo, "results": results}
 
@@ -335,23 +248,11 @@ def collab_delete_clocks(body: DeleteIn, _user: dict = Depends(require_permissio
         if not dev:
             results.append({"device": name, "ok": False, "error": "sin IP"})
             continue
-        conn = None
         try:
-            conn = _connect(dev)
-            users = conn.get_users() or []
-            target = next((u for u in users if str(u.user_id) == str(body.codigo)), None)
-            if not target:
-                results.append({"device": name, "ok": True, "deleted": False, "message": "no estaba"})
-            else:
-                try:
-                    conn.delete_user(uid=getattr(target, "uid", None), user_id=str(body.codigo))
-                except TypeError:
-                    conn.delete_user(uid=getattr(target, "uid", None))
-                results.append({"device": name, "ok": True, "deleted": True})
+            res = delete_user_on_device(dev, body.codigo, dry_run=False)
+            results.append({"device": name, **res})
         except Exception as e:
             results.append({"device": name, "ok": False, "error": str(e)})
-        finally:
-            _close(conn)
 
     if body.remove_profile:
         try:

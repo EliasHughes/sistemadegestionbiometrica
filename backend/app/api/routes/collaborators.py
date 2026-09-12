@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from app.core.deps import get_current_user
+from app.core.deps import require_permission
+from app.core.safety import MutationFlags, assert_live, preview
 from app.services.audit import audit
 from app.services.collaborators import (
     copy_to_device,
@@ -17,7 +18,7 @@ from app.services.zk_devices import delete_user_on_device, find_device, inspect_
 router = APIRouter(
     prefix="/collaborators",
     tags=["collaborators"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(require_permission("collaborators.read"))],
 )
 
 
@@ -38,28 +39,32 @@ class CollabIn(BaseModel):
     face_registered: bool = False
 
 
-class CopyIn(BaseModel):
+class CopyIn(MutationFlags):
     codigo: str
     dispositivo: str
 
 
-class ActiveIn(BaseModel):
+class ActiveIn(MutationFlags):
     codigo: str
     activo: bool
 
 
-class DeleteIn(BaseModel):
+class DeleteIn(MutationFlags):
     codigo: str
     remove_from_clocks: bool = True
 
 
-class SyncIn(BaseModel):
+class SyncIn(MutationFlags):
     codigo: str
     dispositivos: list[str] = []
 
 
 @router.get("/from-punches")
-def from_punches(q: str = Query("", max_length=80), limit: int = Query(100, ge=1, le=500), _user: dict = Depends(get_current_user)):
+def from_punches(
+    q: str = Query("", max_length=80),
+    limit: int = Query(100, ge=1, le=500),
+    _user: dict = Depends(require_permission("collaborators.read")),
+):
     db = test_connection()
     if db["status"] != "online":
         raise HTTPException(status_code=503, detail=db["detail"])
@@ -82,12 +87,12 @@ def from_punches(q: str = Query("", max_length=80), limit: int = Query(100, ge=1
 
 
 @router.get("/profiles")
-def profiles(_user: dict = Depends(get_current_user)):
+def profiles(_user: dict = Depends(require_permission("collaborators.read"))):
     return {"items": load_collabs()}
 
 
 @router.get("/detail")
-def detail(codigo: str, _user: dict = Depends(get_current_user)):
+def detail(codigo: str, _user: dict = Depends(require_permission("collaborators.read"))):
     profile = get_collab(codigo) or {"codigo": codigo, "dispositivos": []}
     clocks = []
     for name in profile.get("dispositivos") or []:
@@ -103,7 +108,7 @@ def detail(codigo: str, _user: dict = Depends(get_current_user)):
 
 
 @router.post("/profile")
-def save_profile(body: CollabIn, user: dict = Depends(get_current_user)):
+def save_profile(body: CollabIn, user: dict = Depends(require_permission("collaborators.write"))):
     try:
         entry = upsert_collab(body.model_dump())
         audit(user["username"], "save_collaborator", entry.get("codigo", ""), {})
@@ -113,11 +118,7 @@ def save_profile(body: CollabIn, user: dict = Depends(get_current_user)):
 
 
 @router.post("/collaborator-sync")
-def collaborator_sync(body: SyncCollabIn, user: dict = Depends(get_current_user)):
-    from app.services.audit import audit
-    from app.services.collaborators import copy_to_device, get_collab
-    from app.services.zk_devices import find_device, set_user_on_device
-
+def collaborator_sync(body: SyncIn, user: dict = Depends(require_permission("collaborators.sync"))):
     profile = get_collab(body.codigo)
     if not profile:
         raise HTTPException(status_code=404, detail="Guarda la ficha primero")
@@ -128,6 +129,10 @@ def collaborator_sync(body: SyncCollabIn, user: dict = Depends(get_current_user)
             status_code=400,
             detail="Marca al menos un reloj. Si dice 'sin IP', ábrelo en Dispositivos y guarda la IP.",
         )
+
+    assert_live(body.dry_run, body.confirm, "collaborator-sync")
+    if body.dry_run:
+        return preview("collaborator-sync", codigo=body.codigo, dispositivos=targets)
 
     results = []
     for name in targets:
@@ -152,6 +157,7 @@ def collaborator_sync(body: SyncCollabIn, user: dict = Depends(get_current_user)
                     "password": profile.get("password_device") or "",
                     "card": profile.get("card_no") or profile.get("rfid") or 0,
                 },
+                dry_run=False,
             )
             results.append({"device": name, **zk})
         except Exception as e:
@@ -164,15 +170,21 @@ def collaborator_sync(body: SyncCollabIn, user: dict = Depends(get_current_user)
 
     return {"profile": get_collab(body.codigo), "results": results}
 
+
 @router.post("/delete")
-def remove(body: DeleteIn, user: dict = Depends(get_current_user)):
+def remove(body: DeleteIn, user: dict = Depends(require_permission("collaborators.write"))):
     profile = get_collab(body.codigo) or {}
+
+    assert_live(body.dry_run, body.confirm, "delete")
+    if body.dry_run:
+        return preview("delete", codigo=body.codigo, remove_from_clocks=body.remove_from_clocks)
+
     zk = []
     if body.remove_from_clocks:
         for name in profile.get("dispositivos") or []:
             dev = find_device(name)
             if dev:
-                zk.append({"device": name, **delete_user_on_device(dev, body.codigo)})
+                zk.append({"device": name, **delete_user_on_device(dev, body.codigo, dry_run=False)})
     try:
         deleted = delete_collab(body.codigo)
     except ValueError as e:
@@ -182,7 +194,11 @@ def remove(body: DeleteIn, user: dict = Depends(get_current_user)):
 
 
 @router.post("/copy-device")
-def copy_device(body: CopyIn, _user: dict = Depends(get_current_user)):
+def copy_device(body: CopyIn, _user: dict = Depends(require_permission("collaborators.sync"))):
+    assert_live(body.dry_run, body.confirm, "copy-device")
+    if body.dry_run:
+        return preview("copy-device", codigo=body.codigo, dispositivo=body.dispositivo)
+
     try:
         return copy_to_device(body.codigo, body.dispositivo.strip())
     except ValueError as e:
@@ -190,23 +206,30 @@ def copy_device(body: CopyIn, _user: dict = Depends(get_current_user)):
 
 
 @router.post("/set-active")
-def active(body: ActiveIn, _user: dict = Depends(get_current_user)):
+def active(body: ActiveIn, _user: dict = Depends(require_permission("collaborators.write"))):
+    assert_live(body.dry_run, body.confirm, "set-active")
+    if body.dry_run:
+        return preview("set-active", codigo=body.codigo, activo=body.activo)
+
     try:
         return set_active(body.codigo, body.activo)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-@router.post("/collab-push")
-def collab_push(body: SyncCollabIn, user: dict = Depends(get_current_user)):
-    from app.services.collaborators import copy_to_device, get_collab
-    from app.services.zk_devices import set_user_on_device
 
+@router.post("/collab-push")
+def collab_push(body: SyncIn, user: dict = Depends(require_permission("zk.push"))):
     profile = get_collab(body.codigo)
     if not profile:
         raise HTTPException(status_code=404, detail="Guarda la ficha primero")
     targets = [str(n).strip() for n in (body.dispositivos or []) if str(n).strip()]
     if not targets:
         raise HTTPException(status_code=400, detail="Marca al menos un reloj")
+
+    assert_live(body.dry_run, body.confirm, "collab-push")
+    if body.dry_run:
+        return preview("collab-push", codigo=body.codigo, dispositivos=targets)
+
     results = []
     for name in targets:
         try:
@@ -214,10 +237,7 @@ def collab_push(body: SyncCollabIn, user: dict = Depends(get_current_user)):
         except Exception as e:
             results.append({"device": name, "ok": False, "error": f"ficha: {e}"})
             continue
-        dev = _resolve_clock(name) if "_resolve_clock" in globals() else None
-        if not dev:
-            from app.services.zk_devices import find_device
-            dev = find_device(name)
+        dev = find_device(name)
         if not dev or not str(dev.get("ip") or "").strip():
             results.append({"device": name, "ok": False, "error": "reloj sin IP en inventario"})
             continue
@@ -230,6 +250,7 @@ def collab_push(body: SyncCollabIn, user: dict = Depends(get_current_user)):
                     "password": profile.get("password_device") or "",
                     "card": profile.get("card_no") or profile.get("rfid") or 0,
                 },
+                dry_run=False,
             )
             results.append({"device": name, **(zk if isinstance(zk, dict) else {"ok": False, "error": str(zk)})})
         except Exception as e:

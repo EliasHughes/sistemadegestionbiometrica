@@ -1,163 +1,75 @@
 import { useEffect, useState } from "react";
+import { RefreshCw } from "lucide-react";
 import { authFetch } from "../lib/api";
+import { Btn, PageHeader, Panel } from "../ui/kit";
 
-type SyncRow = {
-  id?: number;
-  fecha?: string;
-  evento?: string;
-  detalle?: string;
-  registros?: number;
-  estado?: string;
-  [key: string]: unknown;
-};
+type Row = { id?: number; fecha?: string; evento?: string; detalle?: string; registros?: number; estado?: string };
 
 export default function SyncHistory() {
-  const [rows, setRows] = useState<SyncRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [syncing, setSyncing] = useState(false);
+  const [items, setItems] = useState<Row[]>([]);
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
 
   const load = async () => {
     setLoading(true);
-    setError("");
+    setErr("");
     try {
       const res = await authFetch("/api/records/sync-history?limit=150");
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        throw new Error(
-          typeof d.detail === "string" ? d.detail : "Error al cargar historial"
-        );
-      }
       const data = await res.json();
-      setRows(data.items || []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Error de conexión");
-      setRows([]);
+      if (!res.ok) throw new Error(data.detail || `Error ${res.status}`);
+      setItems(data.items || []);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "No se cargó el historial");
     } finally {
       setLoading(false);
     }
   };
 
-  const syncNow = async () => {
-    setSyncing(true);
-    setError("");
+  const runNow = async () => {
+    setLoading(true);
     try {
       const res = await authFetch("/api/records/sync-now", { method: "POST" });
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        throw new Error(
-          typeof d.detail === "string" ? d.detail : "Error al sincronizar"
-        );
-      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `Error ${res.status}`);
       await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Error de conexión");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Sync falló");
     } finally {
-      setSyncing(false);
+      setLoading(false);
     }
   };
 
-  useEffect(() => {
-    load();
-  }, []);
-
-  const fmt = (v: unknown) => {
-    if (v === null || v === undefined || v === "") return "—";
-    return String(v);
-  };
+  useEffect(() => { load(); }, []);
+  const ok = items.filter((i) => i.estado === "ok").length;
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-bold text-zinc-900">Historial Sync</h2>
-          <p className="text-sm text-zinc-500">
-            Registro de lecturas a BioTimeDB · log de la aplicación
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={load}
-            disabled={loading || syncing}
-            className="text-sm font-semibold px-3 py-1.5 rounded-lg border border-zinc-200 bg-white hover:bg-zinc-50 text-zinc-700"
-          >
-            Actualizar
-          </button>
-          <button
-            onClick={syncNow}
-            disabled={loading || syncing}
-            className="text-sm font-semibold px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 disabled:bg-zinc-300 text-white"
-          >
-            {syncing ? "Sincronizando..." : "Sincronizar ahora"}
-          </button>
-        </div>
+    <div className="space-y-5 page-enter">
+      <PageHeader kicker="Operación" title="Historial Sync" subtitle="Bitácora de lecturas y empujes"
+        actions={<><Btn tone="ghost" onClick={load}><RefreshCw size={16} /></Btn><Btn tone="primary" onClick={runNow} disabled={loading}>Sync ahora</Btn></>} />
+      <div className="grid sm:grid-cols-3 gap-3">
+        <div className="kpi-tile kpi-violet"><span className="shine" /><p className="text-xs text-white/80">Eventos</p><p className="text-3xl font-black">{items.length}</p></div>
+        <div className="kpi-tile kpi-emerald"><span className="shine" /><p className="text-xs text-white/80">OK</p><p className="text-3xl font-black">{ok}</p></div>
+        <div className="kpi-tile kpi-amber"><span className="shine" /><p className="text-xs text-white/80">Otros</p><p className="text-3xl font-black">{items.length - ok}</p></div>
       </div>
-
-      {error && (
-        <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-sm text-rose-700">
-          {error}
-        </div>
-      )}
-
-      <div className="bg-white border border-zinc-200 rounded-2xl shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
+      {err ? <p className="text-sm text-rose-700 bg-rose-50 rounded-xl px-3 py-2">{err}</p> : null}
+      <Panel>
+        <div className="overflow-auto max-h-[560px]">
           <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-zinc-50 border-b border-zinc-200 text-left text-[11px] uppercase tracking-wider text-zinc-500">
-                <th className="px-4 py-3 font-semibold">Fecha</th>
-                <th className="px-4 py-3 font-semibold">Evento</th>
-                <th className="px-4 py-3 font-semibold">Detalle</th>
-                <th className="px-4 py-3 font-semibold">Registros</th>
-                <th className="px-4 py-3 font-semibold">Estado</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-100">
-              {loading && rows.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-zinc-400">
-                    Cargando...
-                  </td>
-                </tr>
-              )}
-              {!loading && rows.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-zinc-400">
-                    Sin sincronizaciones aún. Usa &quot;Sincronizar ahora&quot;.
-                  </td>
-                </tr>
-              )}
-              {rows.map((row, i) => (
-                <tr key={row.id ?? i} className="hover:bg-zinc-50/80">
-                  <td className="px-4 py-2.5 whitespace-nowrap text-zinc-700">
-                    {fmt(row.fecha)}
-                  </td>
-                  <td className="px-4 py-2.5 font-medium text-zinc-900">
-                    {fmt(row.evento)}
-                  </td>
-                  <td className="px-4 py-2.5 text-zinc-600 max-w-[280px] truncate">
-                    {fmt(row.detalle)}
-                  </td>
-                  <td className="px-4 py-2.5 tabular-nums">{fmt(row.registros)}</td>
-                  <td className="px-4 py-2.5">
-                    <span
-                      className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
-                        String(row.estado).toLowerCase() === "ok"
-                          ? "bg-emerald-50 text-emerald-700"
-                          : "bg-rose-50 text-rose-700"
-                      }`}
-                    >
-                      {fmt(row.estado)}
-                    </span>
-                  </td>
+            <thead><tr className="text-[11px] uppercase text-zinc-500 text-left"><th className="py-2">Fecha</th><th>Evento</th><th>Detalle</th><th>Regs</th><th>Estado</th></tr></thead>
+            <tbody>
+              {items.map((r, i) => (
+                <tr key={r.id ?? i} className="border-t border-zinc-100">
+                  <td className="py-2 text-xs">{r.fecha}</td>
+                  <td>{r.evento}</td>
+                  <td className="text-xs text-zinc-500 max-w-[280px] truncate">{r.detalle}</td>
+                  <td>{r.registros ?? 0}</td>
+                  <td className={r.estado === "ok" ? "text-emerald-600 font-semibold" : "text-rose-600"}>{r.estado}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-        <div className="px-4 py-2 border-t border-zinc-100 text-[11px] text-zinc-400">
-          {rows.length} registro(s)
-        </div>
-      </div>
+      </Panel>
     </div>
   );
 }
