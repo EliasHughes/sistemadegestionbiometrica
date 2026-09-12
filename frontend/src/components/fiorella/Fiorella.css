@@ -1,0 +1,50 @@
+/* frontend/src/components/fiorella/Fiorella.css */
+
+.fiorella-stage {
+  position: fixed;
+  left: 0;
+  bottom: 8px;
+  z-index: 60;
+  width: 150px;
+  pointer-events: none;
+  perspective: 800px;
+}
+
+/* Sección 6.3 del plan: Fiorella puede pasar detrás de un widget del dashboard. */
+.fiorella-stage.fiorella-behind {
+  z-index: 10;
+}
+
+.fiorella-stage * {
+  pointer-events: auto;
+}
+
+.fiorella-sprite {
+  height: 168px;
+  width: auto;
+  display: block;
+  background: transparent;
+  filter: drop-shadow(0 12px 14px rgba(15, 23, 42, 0.28));
+  transform-origin: 50% 100%;
+  cursor: pointer;
+  user-select: none;
+}
+
+.fiorella-bubble {
+  max-width: 200px;
+  margin: 0 0 6px;
+  background: #fff;
+  border: 1px solid #fecdd3;
+  border-radius: 16px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #3f3f46;
+  box-shadow: 0 10px 24px rgba(200, 16, 46, 0.12);
+}
+
+/* Sección 11 del plan: respetar el movimiento reducido del usuario. */
+@media (prefers-reduced-motion: reduce) {
+  .fiorella-stage {
+    transition: none !important;
+  }
+}

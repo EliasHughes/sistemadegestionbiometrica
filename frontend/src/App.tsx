@@ -19,7 +19,7 @@ import Settings from "./pages/Settings";
 import SqlHistory from "./pages/SqlHistory";
 import Inventory from "./pages/Inventory";
 import AdvancedReports from "./pages/AdvancedReports"
-import Fiorella from "./components/layout/Fiorella";
+import Fiorella from "./components/fiorella/FiorellaController";
 
 function App() {
   const { user, isAuthenticated, ready, login, logout } = useAuth();

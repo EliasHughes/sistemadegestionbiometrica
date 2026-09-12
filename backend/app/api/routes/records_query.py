@@ -24,7 +24,7 @@ def punches_recent(
     limit: int = Query(50, ge=1, le=200),
     _user: dict = Depends(require_permission("attendance.read")),
 ):
-    require_db()
+    _require_db()
     try:
         rows = fetch_all(
             """
