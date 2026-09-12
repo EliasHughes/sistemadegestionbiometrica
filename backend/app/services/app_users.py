@@ -140,6 +140,10 @@ def authenticate(username: str, password: str) -> dict[str, Any] | None:
 
 
 def public_user(u: dict[str, Any]) -> dict[str, Any]:
+    from app.core.permissions import resolve_operations
+
+    screens = screens_of(u)
+    operations = resolve_operations(u)
     return {
         "username": u["username"],
         "name": u.get("name") or u["username"],
@@ -147,12 +151,18 @@ def public_user(u: dict[str, Any]) -> dict[str, Any]:
         "active": bool(u.get("active", True)),
         "must_change_password": bool(u.get("must_change_password", False)),
         "remote": bool(u.get("remote", False)),
-        "permissions": {"screens": screens_of(u)},
-        "screens": screens_of(u),
+        "permissions": {
+            "screens": screens,
+            "operations": operations,
+        },
+        "screens": screens,
+        "operations": operations,
     }
 
 
 def upsert_user(data: dict[str, Any], password_plain: str | None = None) -> dict[str, Any]:
+    from app.core.permissions import normalize_operations, operations_for_role
+
     username = (data.get("username") or "").strip()
     if not username:
         raise ValueError("El usuario de acceso es obligatorio")
@@ -161,15 +171,28 @@ def upsert_user(data: dict[str, Any], password_plain: str | None = None) -> dict
     screens = data.get("screens")
     if not isinstance(screens, dict):
         screens = screens_of(prev or data)
+
+    role = (data.get("role") or (prev or {}).get("role") or "consulta").strip().lower()
+    incoming_ops = data.get("operations")
+    if incoming_ops is None and isinstance(data.get("permissions"), dict):
+        incoming_ops = data["permissions"].get("operations")
+    operations = normalize_operations(incoming_ops)
+    if not operations:
+        prev_perms = (prev or {}).get("permissions") if isinstance((prev or {}).get("permissions"), dict) else {}
+        operations = normalize_operations((prev_perms or {}).get("operations")) or operations_for_role(role)
+
     entry = {
         "username": username,
         "name": (data.get("name") or username).strip(),
-        "role": (data.get("role") or "viewer").strip().lower(),
+        "role": role,
         "active": bool(data.get("active", True)),
         "must_change_password": bool(data.get("must_change_password", False)),
         "remote": bool(data.get("remote", False)),
         "password": (prev or {}).get("password") or "",
-        "permissions": {"screens": {**EMPTY_SCREENS, **screens}},
+        "permissions": {
+            "screens": {**EMPTY_SCREENS, **screens},
+            "operations": operations,
+        },
     }
     pwd = (password_plain or "").strip()
     if pwd and pwd not in ("••••••", "******"):
@@ -185,7 +208,6 @@ def upsert_user(data: dict[str, Any], password_plain: str | None = None) -> dict
         items.append(entry)
     save_users(items)
     return public_user(entry)
-
 
 def delete_user(username: str) -> None:
     k = _key(username)

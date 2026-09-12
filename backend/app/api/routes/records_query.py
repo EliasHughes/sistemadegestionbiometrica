@@ -1,7 +1,8 @@
 # backend/app/api/routes/records_query.py
 from datetime import date, datetime, time
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from app.core.deps import require_permission
 
 from app.services.audit import recent as load_audit
 from app.services.database import fetch_all, test_connection
@@ -17,9 +18,13 @@ def _require_db():
     return db
 
 
+
 @router.get("/recent")
-def recent_punches(limit: int = Query(50, ge=1, le=200)):
-    _require_db()
+def punches_recent(
+    limit: int = Query(50, ge=1, le=200),
+    _user: dict = Depends(require_permission("attendance.read")),
+):
+    require_db()
     try:
         rows = fetch_all(
             """
@@ -37,7 +42,7 @@ def recent_punches(limit: int = Query(50, ge=1, le=200)):
 
 
 @router.get("/columns")
-def punches_columns():
+def punches_columns(_user: dict = Depends(require_permission("attendance.read"))):
     _require_db()
     rows = fetch_all(
         """
@@ -51,7 +56,7 @@ def punches_columns():
 
 
 @router.get("/summary")
-def punches_summary():
+def punches_summary(_user: dict = Depends(require_permission("attendance.read"))):
     db = _require_db()
     try:
         today = fetch_all(
@@ -79,9 +84,90 @@ def punches_summary():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/ops-overview")
+def ops_overview(_user: dict = Depends(require_permission("attendance.read"))):
+    empty = {
+        "today": {"total": 0, "empleados": 0, "relojes": 0, "sin_salida": 0},
+        "yesterday": {"total": 0, "empleados": 0},
+        "open_shifts": [],
+        "by_dept": [],
+        "sql_online": False,
+    }
+    db = test_connection()
+    if db.get("status") != "online":
+        empty["error"] = db.get("detail", "SQL offline")
+        return empty
+
+    try:
+        today = fetch_all(
+            """
+            SELECT
+                COUNT(*) AS total,
+                COUNT(DISTINCT codigo) AS empleados,
+                COUNT(DISTINCT dispositivo_origen) AS relojes,
+                SUM(CASE WHEN entrada IS NOT NULL AND salida IS NULL THEN 1 ELSE 0 END) AS sin_salida
+            FROM [dbo].[punches]
+            WHERE CAST(fecha AS date) = CAST(GETDATE() AS date)
+            """
+        )
+        t = today[0] if today else {}
+        yesterday = fetch_all(
+            """
+            SELECT
+                COUNT(*) AS total,
+                COUNT(DISTINCT codigo) AS empleados
+            FROM [dbo].[punches]
+            WHERE CAST(fecha AS date) = CAST(DATEADD(day, -1, GETDATE()) AS date)
+            """
+        )
+        y = yesterday[0] if yesterday else {}
+        open_shifts = fetch_all(
+            """
+            SELECT TOP 20
+                codigo,
+                nombre,
+                dispositivo_origen,
+                CONVERT(varchar(8), entrada, 108) AS entrada
+            FROM [dbo].[punches]
+            WHERE CAST(fecha AS date) = CAST(GETDATE() AS date)
+              AND entrada IS NOT NULL
+              AND salida IS NULL
+            ORDER BY entrada DESC
+            """
+        )
+        by_dept = fetch_all(
+            """
+            SELECT TOP 12
+                ISNULL(NULLIF(LTRIM(RTRIM(departamento)), ''), 'Sin departamento') AS depto,
+                COUNT(*) AS total
+            FROM [dbo].[punches]
+            WHERE CAST(fecha AS date) = CAST(GETDATE() AS date)
+            GROUP BY ISNULL(NULLIF(LTRIM(RTRIM(departamento)), ''), 'Sin departamento')
+            ORDER BY COUNT(*) DESC
+            """
+        )
+        return {
+            "today": {
+                "total": int(t.get("total") or 0),
+                "empleados": int(t.get("empleados") or 0),
+                "relojes": int(t.get("relojes") or 0),
+                "sin_salida": int(t.get("sin_salida") or 0),
+            },
+            "yesterday": {
+                "total": int(y.get("total") or 0),
+                "empleados": int(y.get("empleados") or 0),
+            },
+            "open_shifts": open_shifts or [],
+            "by_dept": by_dept or [],
+            "sql_online": True,
+        }
+    except Exception as e:
+        empty["error"] = str(e)
+        return empty
+
 
 @router.get("/devices")
-def list_devices():
+def punches_devices(_user: dict = Depends(require_permission("attendance.read"))):
     _require_db()
     try:
         rows = fetch_all(
@@ -104,7 +190,11 @@ def list_devices():
 
 
 @router.get("/employees")
-def list_employees(q: str = Query("", max_length=80), limit: int = Query(100, ge=1, le=500)):
+def punches_employees(
+    q: str = Query("", max_length=80),
+    limit: int = Query(100, ge=1, le=500),
+    _user: dict = Depends(require_permission("attendance.read")),
+):
     _require_db()
     try:
         if q.strip():
@@ -180,7 +270,7 @@ def search_punches(
 
 
 @router.get("/stats")
-def punches_stats():
+def punches_stats(_user: dict = Depends(require_permission("attendance.read"))):
     empty = {"by_device": [], "by_day": [], "by_hour": [], "activity": []}
     db = test_connection()
     if db.get("status") != "online":

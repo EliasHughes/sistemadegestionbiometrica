@@ -5,7 +5,9 @@ export type AppUser = {
   role: string;
   permissions: {
     screens: Record<string, boolean>;
+    operations?: string[];
   };
+  operations?: string[];
 };
 
 /** Claves de pantallas/módulos que el admin puede otorgar o quitar */
@@ -24,8 +26,39 @@ export type ScreenKey =
   | "data_export"
   | "sync_history"
   | "users"
-  | "settings";
-    "advanced_reports";
+  | "settings"
+  | "advanced_reports";
+
+export type OperationKey =
+  | "users.read"
+  | "users.write"
+  | "users.delete"
+  | "roles.read"
+  | "roles.write"
+  | "attendance.read"
+  | "reports.export"
+  | "payroll.run"
+  | "remote_punch"
+  | "schema.admin"
+  | "settings.write"
+  | "collaborators.read"
+  | "collaborators.write"
+  | "collaborators.sync"
+  | "schedules.read"
+  | "schedules.write"
+  | "inventory.read"
+  | "inventory.write"
+  | "bulk.execute"
+  | "devices.read"
+  | "devices.write"
+  | "devices.delete"
+  | "zk.read"
+  | "zk.clone"
+  | "zk.move"
+  | "zk.enroll"
+  | "zk.delete"
+  | "zk.push"
+  | "zk.sync";
 
 /** Definición de cada módulo (para el menú y control de acceso) */
 export type ModuleDef = {
@@ -53,5 +86,5 @@ export const APP_MODULES: ModuleDef[] = [
   { key: "sync_history", label: "Historial Sync", path: "/sync-history", requiresPermission: true },
   { key: "users", label: "Usuarios", path: "/users", requiresPermission: true },
   { key: "settings", label: "Configuración", path: "/settings", requiresPermission: true },
-  { key: "advanced_reports", label: "Reportes Avanzados", path: "/advanced-reports", requiresPermission: true }
+  { key: "advanced_reports", label: "Reportes Avanzados", path: "/advanced-reports", requiresPermission: true },
 ];

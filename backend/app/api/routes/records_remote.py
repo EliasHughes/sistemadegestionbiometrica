@@ -1,15 +1,17 @@
 # backend/app/api/routes/records_remote.py
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 from app.services.database import execute, fetch_all
+from app.core.deps import require_permission
+from app.core.safety import MutationFlags, assert_live, preview
 
 router = APIRouter()
 
 
-class RemotePunchIn(BaseModel):
+class RemotePunchIn(MutationFlags):
     codigo: str
     tipo: str = "entrada"
     comentario: str = ""
@@ -31,7 +33,16 @@ def _lookup_employee(codigo: str) -> dict:
 
 
 @router.post("/remote-punch")
-def records_remote_punch(body: RemotePunchIn):
+def records_remote_punch(body: RemotePunchIn, _user: dict = Depends(require_permission("remote_punch"))):
+    assert_live(body.dry_run, body.confirm, "remote-punch")
+    if body.dry_run:
+        return preview(
+            "remote-punch",
+            codigo=body.codigo,
+            tipo=body.tipo,
+            dispositivo=body.dispositivo,
+        )
+
     codigo = body.codigo.strip()
     if not codigo:
         raise HTTPException(status_code=400, detail="Código requerido")
@@ -88,7 +99,7 @@ def records_remote_punch(body: RemotePunchIn):
 
 
 @router.get("/remote-devices")
-def remote_devices():
+def remote_devices(_user: dict = Depends(require_permission("devices.read"))):
     try:
         rows = fetch_all(
             """

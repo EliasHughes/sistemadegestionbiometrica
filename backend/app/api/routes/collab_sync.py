@@ -1,30 +1,33 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.core.deps import get_current_user
+from app.core.deps import require_permission
 from app.services.collaborators import copy_to_device, delete_collab, get_collab, upsert_collab
 from app.services.json_store import data_path, read_json
 from app.services.zk_devices import find_device, load_devices
 
+from app.core.safety import MutationFlags, assert_live, preview
+from app.services.zk_devices import clone_user, delete_user_on_device, find_device, set_user_on_device
+
 router = APIRouter(
     prefix="/records",
     tags=["collab-zk"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(require_permission("zk.read"))],
 )
 
 
-class PushIn(BaseModel):
+class PushIn(MutationFlags):
     codigo: str
     dispositivos: list[str] = []
 
 
-class CloneIn(BaseModel):
+class CloneIn(MutationFlags):
     codigo: str
     from_device: str
     to_devices: list[str] = []
 
 
-class DeleteIn(BaseModel):
+class DeleteIn(MutationFlags):
     codigo: str
     dispositivos: list[str] = []
     remove_profile: bool = True
@@ -147,7 +150,15 @@ def _save_finger(conn, codigo: str, tmpl, dest_uid=None):
 
 
 @router.post("/collab-push")
-def collab_push(body: PushIn, _user: dict = Depends(get_current_user)):
+def collab_push(body: PushIn, _user: dict = Depends(require_permission("zk.push"))):
+    assert_live(body.dry_run, body.confirm, "collab-push")
+    if body.dry_run:
+        return preview(
+            "push",
+            codigo=body.codigo,
+            targets=body.dispositivos,
+        )
+
     profile = get_collab(body.codigo)
     if not profile:
         raise HTTPException(status_code=404, detail="Guarda la ficha primero")
@@ -177,12 +188,14 @@ def collab_push(body: PushIn, _user: dict = Depends(get_current_user)):
                 profile.get("password_device") or "",
                 card,
             )
-            results.append({
-                "device": name,
-                "ok": True,
-                "mode": "live",
-                "uid": getattr(user, "uid", None) if user else None,
-            })
+            results.append(
+                {
+                    "device": name,
+                    "ok": True,
+                    "mode": "live",
+                    "uid": getattr(user, "uid", None) if user else None,
+                }
+            )
         except Exception as e:
             results.append({"device": name, "ok": False, "error": str(e)})
         finally:
@@ -191,8 +204,17 @@ def collab_push(body: PushIn, _user: dict = Depends(get_current_user)):
 
 
 @router.post("/collab-clone")
-def collab_clone(body: CloneIn, _user: dict = Depends(get_current_user)):
+def collab_clone(body: CloneIn, _user: dict = Depends(require_permission("zk.clone"))):
     """Copia usuario + huellas + tarjeta del reloj de oficina a los de planta (igual que ponches-beta)."""
+    assert_live(body.dry_run, body.confirm, "collab-clone")
+    if body.dry_run:
+        return preview(
+            "clone",
+            codigo=body.codigo,
+            from_device=body.from_device,
+            to_devices=body.to_devices,
+        )
+
     codigo = str(body.codigo).strip()
     src = _clock(body.from_device)
     if not src:
@@ -225,23 +247,28 @@ def collab_clone(body: CloneIn, _user: dict = Depends(get_current_user)):
         copy_to_device(codigo, body.from_device)
         for n in dest_names:
             copy_to_device(codigo, n)
-        upsert_collab({
-            "codigo": codigo,
-            "nombre": snapshot["nombre"],
-            "card_no": snapshot["card"],
-            "password_device": snapshot["password"],
-            "has_fingerprint": len(snapshot["fingers"]) > 0,
-            "dispositivos": [body.from_device] + dest_names,
-        })
+        upsert_collab(
+            {
+                "codigo": codigo,
+                "nombre": snapshot["nombre"],
+                "card_no": snapshot["card"],
+                "password_device": snapshot["password"],
+                "has_fingerprint": len(snapshot["fingers"]) > 0,
+                "dispositivos": [body.from_device] + dest_names,
+            }
+        )
     except Exception:
         pass
 
-    results = [{
-        "device": body.from_device,
-        "ok": True,
-        "role": "source",
-        "fingers": len(snapshot["fingers"]),
-    }]
+    results = [
+        {
+            "device": body.from_device,
+            "ok": True,
+            "role": "source",
+            "fingers_copied": len(snapshot["fingers"]),
+            "fingers_source": len(snapshot["fingers"]),
+        }
+    ]
     for name in dest_names:
         dev = _clock(name)
         if not dev:
@@ -252,33 +279,54 @@ def collab_clone(body: CloneIn, _user: dict = Depends(get_current_user)):
             conn = _connect(dev)
             dest_user = _ensure_user(
                 conn,
-                snapshot["codigo"],
+                codigo,
                 snapshot["nombre"],
                 snapshot["password"],
                 snapshot["card"],
             )
+            if not dest_user:
+                results.append({"device": name, "ok": False, "error": "no se creó el usuario"})
+                continue
+            dest_uid = getattr(dest_user, "uid", None)
             copied = 0
-            dest_uid = getattr(dest_user, "uid", None) if dest_user else None
-            for tmpl in snapshot["fingers"]:
-                if _save_finger(conn, codigo, tmpl, dest_uid):
-                    copied += 1
-            results.append({
-                "device": name,
-                "ok": True,
-                "mode": "live",
-                "fingers_copied": copied,
-                "fingers_source": len(snapshot["fingers"]),
-                "card": snapshot["card"],
-            })
+            err = ""
+            if snapshot["fingers"] and dest_uid is not None:
+                for item in snapshot["fingers"]:
+                    try:
+                        f = _as_finger(dest_uid, item["fid"], item["blob"])
+                        conn.save_user_template(dest_user, [f])
+                        copied += 1
+                    except Exception as e2:
+                        err = f"{err} | {e2}" if err else str(e2)
+            results.append(
+                {
+                    "device": name,
+                    "ok": True,
+                    "mode": "live",
+                    "fingers_copied": copied,
+                    "fingers_source": len(snapshot["fingers"]),
+                    "finger_errors": err[:300],
+                    "dest_uid": dest_uid,
+                }
+            )
         except Exception as e:
             results.append({"device": name, "ok": False, "error": str(e)})
         finally:
             _close(conn)
+
     return {"ok": True, "codigo": codigo, "results": results}
 
 
 @router.post("/collab-delete-clocks")
-def collab_delete_clocks(body: DeleteIn, _user: dict = Depends(get_current_user)):
+def collab_delete_clocks(body: DeleteIn, _user: dict = Depends(require_permission("zk.delete"))):
+    assert_live(body.dry_run, body.confirm, "collab-delete-clocks")
+    if body.dry_run:
+        return preview(
+            "delete_clocks",
+            codigo=body.codigo,
+            targets=body.dispositivos,
+        )
+
     profile = get_collab(body.codigo) or {}
     targets = body.dispositivos or profile.get("dispositivos") or []
     results = []
@@ -304,9 +352,11 @@ def collab_delete_clocks(body: DeleteIn, _user: dict = Depends(get_current_user)
             results.append({"device": name, "ok": False, "error": str(e)})
         finally:
             _close(conn)
+
     if body.remove_profile:
         try:
             delete_collab(body.codigo)
         except Exception as e:
             return {"ok": False, "clocks": results, "profile_error": str(e)}
+
     return {"ok": True, "clocks": results}

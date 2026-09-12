@@ -1,8 +1,9 @@
 from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from app.core.deps import require_permission
 
-from app.core.deps import get_current_user, require_admin
+from app.core.deps import  require_admin
 from app.services.database import fetch_all, test_connection
 from app.services.app_settings import load_settings
 from app.services.overtime import (
@@ -17,7 +18,7 @@ from app.services.overtime import (
 router = APIRouter(
     prefix="/payroll",
     tags=["payroll"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(require_permission("schedules.read"))],
 )
 
 
@@ -67,7 +68,7 @@ class OvertimeRequest(BaseModel):
 
 
 @router.post("/overtime")
-def compute_overtime(body: OvertimeRequest):
+def compute_overtime(body: OvertimeRequest, _user: dict = Depends(require_permission("reports.read"))):
     db = test_connection()
     if db["status"] != "online":
         raise HTTPException(status_code=503, detail=db["detail"])
@@ -218,7 +219,7 @@ class RotationPayload(BaseModel):
 
 
 @router.get("/rotations")
-def list_rotations():
+def list_rotations(_user: dict = Depends(require_permission("schedules.read"))):
     items = load_rotations()
     today = date_cls.today()
     for it in items:
@@ -228,7 +229,7 @@ def list_rotations():
 
 
 @router.post("/rotations")
-def upsert_rotation(body: RotationPayload, _user: dict = Depends(require_admin)):
+def upsert_rotation(body: RotationPayload, _user: dict = Depends(require_permission("schedules.write"))):
     items = load_rotations()
     rid = body.name.strip().lower().replace(" ", "_")
     payload = {

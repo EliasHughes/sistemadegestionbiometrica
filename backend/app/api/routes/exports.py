@@ -4,7 +4,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from app.core.deps import get_current_user
+from app.core.deps import require_permission
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -20,9 +20,8 @@ from app.services.database import fetch_all, test_connection
 router = APIRouter(
     prefix="/records/export",
     tags=["export"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(require_permission("exports.read"))],
 )
-
 
 # ============================================================
 # UTILIDADES

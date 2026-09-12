@@ -5,6 +5,7 @@ from app.core.config import settings
 from app.core.deps import require_admin
 from app.services.audit import audit
 from app.services.database import fetch_all, test_connection
+from app.core.deps import require_permission
 
 router = APIRouter(
     prefix="/schema",
@@ -37,7 +38,7 @@ def _allowed_tables() -> set[str]:
 
 
 @router.get("/tables")
-def list_tables(user: dict = Depends(require_admin)):
+def list_tables(user: dict = Depends(require_permission("settings.read"))):
     _assert_db()
     names = sorted(_allowed_tables())
     audit(user["username"], "schema_tables", "dbo", {"count": len(names)})
@@ -45,7 +46,7 @@ def list_tables(user: dict = Depends(require_admin)):
 
 
 @router.get("/columns/{table_name}")
-def list_columns(table_name: str, user: dict = Depends(require_admin)):
+def list_columns(table_name: str, user: dict = Depends(require_permission("settings.read"))):
     _assert_db()
     allowed = _allowed_tables()
     if table_name not in allowed:
@@ -67,7 +68,7 @@ def list_columns(table_name: str, user: dict = Depends(require_admin)):
 def preview_table(
     table: str,
     limit: int = Query(20, ge=1, le=_MAX_PREVIEW),
-    user: dict = Depends(require_admin),
+    user: dict = Depends(require_permission("settings.read")),
 ):
     _assert_db()
     allowed = _allowed_tables()

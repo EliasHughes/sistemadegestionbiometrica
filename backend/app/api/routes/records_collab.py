@@ -2,9 +2,11 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
+from app.core.deps import require_permission
+from app.core.safety import assert_live, preview
 from pydantic import BaseModel
 
-from app.core.deps import get_current_user
+
 from app.services.database import fetch_all
 from app.api.routes.records_shared import COLLAB_FILE, DEVICES_FILE, read_json, write_json
 
@@ -28,6 +30,40 @@ class CollabFull(BaseModel):
     privilege: int = 0
     schedule_id: str = ""
     reloj_oficina: str = ""
+
+    @classmethod
+    def _as_int(cls, v, default: int = 0) -> int:
+        if v is None or v == "":
+            return default
+        if isinstance(v, bool):
+            return int(v)
+        if isinstance(v, (int, float)):
+            return int(v)
+        text = str(v).strip().lower()
+        if text in ("administrador del reloj", "admin", "14"):
+            return 14
+        if text in ("usuario estándar en el reloj", "usuario estandar en el reloj", "user", "0"):
+            return 0
+        try:
+            return int(float(text))
+        except Exception:
+            return default
+
+    @classmethod
+    def _as_str(cls, v) -> str:
+        if v is None:
+            return ""
+        return str(v).strip()
+
+    def model_post_init(self, __context) -> None:
+        self.privilege = self._as_int(self.privilege, 0)
+        self.card_no = self._as_str(self.card_no)
+        self.rfid = self._as_str(self.rfid)
+        self.schedule_id = self._as_str(self.schedule_id)
+        if self.dispositivos is None:
+            self.dispositivos = []
+        elif isinstance(self.dispositivos, str):
+            self.dispositivos = [self.dispositivos] if self.dispositivos.strip() else []
 
 
 class CopyBody(BaseModel):
@@ -68,7 +104,7 @@ def _resolve_clock(name: str) -> dict | None:
 
 
 @router.get("/collaborators")
-def list_collaborators(q: str = "", limit: int = 200):
+def list_collaborators(q: str = "", limit: int = 200, _user: dict = Depends(require_permission("collaborators.read"))):
     qn = q.strip()
     rows = []
     try:
@@ -153,12 +189,12 @@ def list_collaborators(q: str = "", limit: int = 200):
 
 
 @router.get("/collaborator-profiles")
-def collab_profiles():
+def collab_profiles(_user: dict = Depends(require_permission("collaborators.read"))):
     return {"items": read_json(COLLAB_FILE, [])}
 
 
 @router.post("/collaborator-profile")
-def collab_save(body: CollabFull):
+def collab_save(body: CollabFull, _user: dict = Depends(require_permission("collaborators.write"))):
     items = read_json(COLLAB_FILE, [])
     codigo = body.codigo.strip()
     entry = body.model_dump()
@@ -176,7 +212,7 @@ def collab_save(body: CollabFull):
 
 
 @router.post("/collaborator-copy")
-def collab_copy(body: CopyBody):
+def collab_copy(body: CopyBody, _user: dict = Depends(require_permission("collaborators.sync"))):
     codigo = body.codigo.strip()
     device = body.dispositivo.strip()
     if not codigo:
@@ -200,7 +236,7 @@ def collab_copy(body: CopyBody):
 
 
 @router.get("/collaborator-detail")
-def collaborator_detail(codigo: str, _user: dict = Depends(get_current_user)):
+def collaborator_detail(codigo: str, _user: dict = Depends(require_permission("collaborators.read"))):
     from app.services.collaborators import get_collab
     from app.services.zk_devices import inspect_user_on_device
 
@@ -231,9 +267,129 @@ def collaborator_detail(codigo: str, _user: dict = Depends(get_current_user)):
             })
     return {"profile": profile, "clocks": clocks}
 
+# Agregar en backend/app/api/routes/records_collab.py (después de la función collaborator_detail)
+
+@router.get("/collab-reconcile")
+def collab_reconcile(
+    codigo: str,
+    _user: dict = Depends(require_permission("collaborators.read")),
+):
+    from app.services.collaborators import get_collab
+    from app.services.zk_devices import inspect_user_on_device
+
+    codigo = (codigo or "").strip()
+    if not codigo:
+        raise HTTPException(status_code=400, detail="codigo requerido")
+
+    profile = get_collab(codigo) or {"codigo": codigo, "dispositivos": []}
+    assigned = [
+        str(n).strip()
+        for n in profile.get("dispositivos") or []
+        if str(n).strip()
+    ]
+    oficina = str(profile.get("reloj_oficina") or "").strip()
+    if oficina and oficina not in assigned:
+        assigned.append(oficina)
+
+    clocks = []
+    mismatches: list[dict] = []
+    for name in assigned:
+        dev = _resolve_clock(name)
+        if not dev:
+            clocks.append({
+                "device": name,
+                "reachable": False,
+                "found": False,
+                "mode": "missing",
+                "message": "Sin IP en inventario",
+            })
+            mismatches.append({
+                "device": name,
+                "code": "not_configured",
+                "detail": "El reloj está en la ficha pero no tiene IP",
+            })
+            continue
+
+        try:
+            info = inspect_user_on_device(dev, codigo)
+        except Exception as e:
+            info = {
+                "device": name,
+                "found": False,
+                "mode": "error",
+                "message": str(e),
+                "finger_count": 0,
+                "card": None,
+            }
+
+        found = bool(info.get("found"))
+        finger_count = int(info.get("finger_count") or 0)
+        card_clock = str(info.get("card") or "")
+        card_ficha = str(profile.get("card_no") or profile.get("rfid") or "")
+        row = {
+            "device": name,
+            "reachable": info.get("mode") == "live",
+            "found": found,
+            "mode": info.get("mode"),
+            "finger_count": finger_count,
+            "card": card_clock,
+            "message": info.get("message") or "",
+        }
+        clocks.append(row)
+
+        if info.get("mode") != "live":
+            mismatches.append({
+                "device": name,
+                "code": "offline_or_error",
+                "detail": row["message"] or "Reloj no consultable",
+            })
+            continue
+
+        if not found:
+            mismatches.append({
+                "device": name,
+                "code": "missing_on_clock",
+                "detail": "Está en la ficha y no en el reloj",
+            })
+
+        if profile.get("has_fingerprint") and finger_count == 0:
+            mismatches.append({
+                "device": name,
+                "code": "fingerprint_missing",
+                "detail": "La ficha marca huella y el reloj no tiene templates",
+            })
+
+        if card_ficha and card_clock and card_ficha != card_clock:
+            mismatches.append({
+                "device": name,
+                "code": "card_mismatch",
+                "detail": f"Ficha {card_ficha} / reloj {card_clock}",
+            })
+
+    ok = not any(
+        m["code"] in ("missing_on_clock", "fingerprint_missing", "card_mismatch")
+        for m in mismatches
+    )
+
+    return {
+        "ok": ok,
+        "codigo": codigo,
+        "profile": {
+            "nombre": profile.get("nombre") or "",
+            "card_no": profile.get("card_no") or profile.get("rfid") or "",
+            "has_fingerprint": bool(profile.get("has_fingerprint")),
+            "has_face": bool(profile.get("has_face")),
+            "dispositivos": assigned,
+            "reloj_oficina": oficina,
+        },
+        "clocks": clocks,
+        "mismatches": mismatches,
+        "mismatch_count": len(mismatches),
+    }
+
 
 @router.post("/collaborator-delete")
-def collaborator_delete(body: DeleteCollabIn, user: dict = Depends(get_current_user)):
+def collaborator_delete(body: DeleteCollabIn, user: dict = Depends(require_permission("collaborators.write"))):
     from app.services.audit import audit
     from app.services.collaborators import delete_collab, get_collab
     from app.services.zk_devices import delete_user_on_device
@@ -241,19 +397,13 @@ def collaborator_delete(body: DeleteCollabIn, user: dict = Depends(get_current_u
     profile = get_collab(body.codigo) or {}
     clocks = list(profile.get("dispositivos") or [])
 
+    assert_live(body.dry_run, body.confirm, "delete_collaborator")
     if body.dry_run:
-        return {
-            "ok": True,
-            "mode": "dry_run",
-            "would": "delete_collaborator",
-            "codigo": body.codigo,
-            "clocks": clocks,
-            "remove_from_clocks": body.remove_from_clocks,
-        }
-    if not body.confirm:
-        raise HTTPException(
-            status_code=409,
-            detail="Operación live bloqueada. Envía dry_run=false y confirm=true.",
+        return preview(
+            "delete_collaborator",
+            codigo=body.codigo,
+            clocks=clocks,
+            remove_from_clocks=body.remove_from_clocks,
         )
 
     zk = []
@@ -273,3 +423,67 @@ def collaborator_delete(body: DeleteCollabIn, user: dict = Depends(get_current_u
     except Exception:
         pass
     return {**deleted, "clocks": zk}
+
+class ReconcileApplyIn(BaseModel):
+    codigo: str
+    dry_run: bool = True
+    confirm: bool = False
+
+
+@router.post("/collab-reconcile/apply")
+def collab_reconcile_apply(
+    body: ReconcileApplyIn,
+    user: dict = Depends(require_permission("collaborators.write")),
+):
+    from app.core.safety import assert_live, preview
+    from app.services.zk_devices import clone_user
+
+    codigo = body.codigo.strip()
+    if not codigo:
+        raise HTTPException(status_code=400, detail="codigo requerido")
+
+    rec = collab_reconcile(codigo=codigo, _user=user)
+    missing = [
+        m["device"]
+        for m in rec.get("mismatches", [])
+        if m.get("code") == "missing_on_clock"
+    ]
+
+    source_clock = None
+    for c in rec.get("clocks", []):
+        if c.get("reachable") and c.get("found"):
+            source_clock = c.get("device")
+            break
+
+    assert_live(body.dry_run, body.confirm, "reconcile_apply")
+    if body.dry_run:
+        return preview(
+            "reconcile_apply",
+            codigo=codigo,
+            missing_targets=missing,
+            source_clock=source_clock,
+        )
+
+    if not missing:
+        return {"ok": True, "message": "No hay relojes pendientes por sincronizar", "results": []}
+
+    if not source_clock:
+        raise HTTPException(
+            status_code=400,
+            detail="No se encontró un reloj origen en línea con los datos del usuario",
+        )
+
+    dev_src = _resolve_clock(source_clock)
+    results = []
+    for target_name in missing:
+        dev_tgt = _resolve_clock(target_name)
+        if not dev_tgt:
+            results.append({"device": target_name, "ok": False, "error": "Sin IP en inventario"})
+            continue
+        try:
+            res = clone_user(dev_src, dev_tgt, codigo, dry_run=False)
+            results.append({"device": target_name, **res})
+        except Exception as e:
+            results.append({"device": target_name, "ok": False, "error": str(e)})
+
+    return {"ok": True, "codigo": codigo, "results": results}

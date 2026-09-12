@@ -3,12 +3,11 @@ from __future__ import annotations
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from app.core.permissions import ADMIN_ROLES, has_permission, normalize_role
 from app.core.security import decode_access_token
 from app.services.app_users import find_user, public_user
 
 _bearer = HTTPBearer(auto_error=False)
-
-ADMIN_ROLES = {"super_admin", "admin"}
 
 
 def get_current_user(
@@ -34,7 +33,7 @@ def require_role(*roles: str):
     allowed = {r.lower() for r in roles}
 
     def _inner(user: dict = Depends(get_current_user)) -> dict:
-        role = str(user.get("role") or "").lower()
+        role = normalize_role(user.get("role"))
         if role in ADMIN_ROLES or role in allowed:
             return user
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sin permiso")
@@ -43,7 +42,21 @@ def require_role(*roles: str):
 
 
 def require_admin(user: dict = Depends(get_current_user)) -> dict:
-    role = str(user.get("role") or "").lower()
+    role = normalize_role(user.get("role"))
     if role not in ADMIN_ROLES:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Requiere rol administrativo")
     return user
+
+
+def require_permission(*operations: str):
+    needed = tuple(op for op in operations if op)
+
+    def _inner(user: dict = Depends(get_current_user)) -> dict:
+        if has_permission(user, *needed):
+            return user
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Sin permiso para: " + ", ".join(needed),
+        )
+
+    return _inner

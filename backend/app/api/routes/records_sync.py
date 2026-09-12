@@ -1,5 +1,6 @@
 # backend/app/api/routes/records_sync.py
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
+from app.core.deps import require_permission
 
 from app.services.database import fetch_all, test_connection
 from app.services.sync_log import append_sync, load_log
@@ -8,7 +9,10 @@ router = APIRouter()
 
 
 @router.get("/sync-history")
-def sync_history(limit: int = Query(150, ge=1, le=500)):
+def sync_history(
+    limit: int = Query(150, ge=1, le=500),
+    _user: dict = Depends(require_permission("sync.read")),
+):
     try:
         app_items = list(reversed(load_log()))[:limit]
     except Exception:
@@ -22,7 +26,7 @@ def sync_history(limit: int = Query(150, ge=1, le=500)):
 
 
 @router.post("/sync-now")
-def sync_now():
+def sync_now(_user: dict = Depends(require_permission("sync.run"))):
     db = test_connection()
     if db["status"] != "online":
         append_sync("sync_manual", str(db.get("detail", "offline")), 0, "error")

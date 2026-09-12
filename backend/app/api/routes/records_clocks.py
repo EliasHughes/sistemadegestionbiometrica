@@ -5,10 +5,12 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-
-from app.core.deps import get_current_user
 from app.services.database import fetch_all
 from app.api.routes.records_shared import DEVICES_FILE, DeviceIn, read_json, write_json
+from app.core.deps import require_permission
+
+from app.core.safety import assert_live, preview
+from app.services.zk_devices import clone_user, delete_user_on_device, find_device, set_user_on_device
 
 router = APIRouter()
 
@@ -34,16 +36,6 @@ class ClockDeleteIn(BaseModel):
     remove_profile: bool = True
     dry_run: bool = True
     confirm: bool = False
-
-
-def _require_live(body) -> None:
-    if body.dry_run:
-        return
-    if not getattr(body, "confirm", False):
-        raise HTTPException(
-            status_code=409,
-            detail="Operación live bloqueada. Envía dry_run=false y confirm=true.",
-        )
 
 
 def _ping_ms(ip: str, timeout_ms: int = 800) -> dict:
@@ -203,7 +195,7 @@ def _read_fingers(conn, codigo: str, uid=None) -> list[dict]:
 
 
 @router.get("/managed-devices")
-def managed_devices():
+def managed_devices(_user: dict = Depends(require_permission("devices.read"))):
     saved = {d.get("name"): d for d in read_json(DEVICES_FILE, []) if d.get("name")}
     try:
         live = fetch_all(
@@ -262,7 +254,7 @@ def managed_devices():
 
 
 @router.post("/managed-devices")
-def save_managed_device(body: DeviceIn):
+def save_managed_device(body: DeviceIn, _user: dict = Depends(require_permission("devices.write"))):
     items = read_json(DEVICES_FILE, [])
     name = body.name.strip()
     if not name:
@@ -279,8 +271,65 @@ def save_managed_device(body: DeviceIn):
     return entry
 
 
+@router.get("/device-health")
+def device_health(_user: dict = Depends(require_permission("devices.read"))):
+    saved = {d.get("name"): d for d in read_json(DEVICES_FILE, []) if d.get("name")}
+    try:
+        live = fetch_all(
+            """
+            SELECT
+                LTRIM(RTRIM(dispositivo_origen)) AS name,
+                COUNT(*) AS punches_total,
+                SUM(CASE WHEN CAST(fecha AS date) = CAST(GETDATE() AS date) THEN 1 ELSE 0 END) AS punches_today,
+                MAX(fecha) AS last_fecha,
+                MAX(entrada) AS last_entrada
+            FROM [dbo].[punches]
+            WHERE dispositivo_origen IS NOT NULL
+              AND LTRIM(RTRIM(dispositivo_origen)) <> ''
+            GROUP BY LTRIM(RTRIM(dispositivo_origen))
+            """
+        )
+    except Exception:
+        live = []
+
+    by_name = {row["name"]: row for row in live}
+    names = list(dict.fromkeys([*by_name.keys(), *saved.keys()]))
+    items = []
+    online_n = 0
+    for name in names:
+        extra = saved.get(name, {})
+        row = by_name.get(name, {})
+        ip = extra.get("ip") or ""
+        ping = _ping_ms(ip) if ip else {"online": False, "latency_ms": None}
+        if ping.get("online"):
+            online_n += 1
+        items.append({
+            "name": name,
+            "ip": ip,
+            "port": extra.get("port", 4370),
+            "location": extra.get("location", ""),
+            "model": extra.get("model", ""),
+            "active": extra.get("active", True),
+            "online": ping.get("online"),
+            "latency_ms": ping.get("latency_ms"),
+            "punches_total": int(row.get("punches_total") or 0),
+            "punches_today": int(row.get("punches_today") or 0),
+            "last_fecha": str(row.get("last_fecha") or ""),
+            "last_entrada": str(row.get("last_entrada") or ""),
+            "configured": bool(ip),
+        })
+    items.sort(key=lambda x: (not x["online"], x["name"] or ""))
+    return {
+        "ok": True,
+        "total": len(items),
+        "online": online_n,
+        "offline": len(items) - online_n,
+        "items": items,
+    }
+
+
 @router.post("/collab-push")
-def collab_push_now(body: ClockPushIn, _user: dict = Depends(get_current_user)):
+def collab_push_now(body: ClockPushIn, _user: dict = Depends(require_permission("zk.push"))):
     from app.services.collaborators import copy_to_device, get_collab
 
     profile = get_collab(body.codigo)
@@ -290,51 +339,34 @@ def collab_push_now(body: ClockPushIn, _user: dict = Depends(get_current_user)):
     if not targets:
         raise HTTPException(status_code=400, detail="Marca al menos un reloj")
 
-    _require_live(body)
+    assert_live(body.dry_run, body.confirm, "collab-push")
     if body.dry_run:
-        return {
-            "ok": True,
-            "mode": "dry_run",
-            "would": "push",
-            "codigo": body.codigo,
-            "targets": targets,
-        }
+        return preview("push", codigo=body.codigo, targets=targets)
 
     results = []
-    raw = str(profile.get("card_no") or profile.get("rfid") or "0")
-    card = int(raw) if str(raw).isdigit() else 0
-    pwd = str(profile.get("password_device") or profile.get("password") or "")[:8]
-    priv = int(profile.get("privilege") or 0)
+    payload = {
+        "codigo": str(profile.get("codigo")),
+        "nombre": profile.get("nombre") or str(profile.get("codigo")),
+        "password": str(profile.get("password_device") or profile.get("password") or "")[:8],
+        "card": int(str(profile.get("card_no") or profile.get("rfid") or "0") or 0)
+        if str(profile.get("card_no") or profile.get("rfid") or "0").isdigit()
+        else 0,
+        "privilege": int(profile.get("privilege") or 0),
+    }
     for name in targets:
-        try:
-            copy_to_device(str(body.codigo), name)
-        except Exception:
-            pass
-        dev = _clock_row(name)
+        dev = find_device(name) or _clock_row(name)
         if not dev:
             results.append({"device": name, "ok": False, "error": "reloj sin IP"})
             continue
-        conn = None
         try:
-            conn = _zk_open(dev)
-            u = _zk_upsert(
-                conn,
-                str(profile.get("codigo")),
-                profile.get("nombre") or str(profile.get("codigo")),
-                pwd,
-                card,
-                priv,
-            )
-            results.append({"device": name, "ok": True, "mode": "live", "uid": getattr(u, "uid", None)})
+            results.append({"device": name, **set_user_on_device(dev, payload, dry_run=False)})
         except Exception as e:
             results.append({"device": name, "ok": False, "error": str(e)})
-        finally:
-            _zk_close(conn)
     return {"ok": True, "mode": "live", "results": results}
 
 
 @router.post("/collab-clone")
-def collab_clone_now(body: ClockCloneIn, _user: dict = Depends(get_current_user)):
+def collab_clone_now(body: ClockCloneIn, _user: dict = Depends(require_permission("zk.clone"))):
     from app.services.collaborators import copy_to_device, get_collab, upsert_collab
 
     codigo = str(body.codigo).strip()
@@ -345,16 +377,14 @@ def collab_clone_now(body: ClockCloneIn, _user: dict = Depends(get_current_user)
     if not dests:
         raise HTTPException(status_code=400, detail="Marca relojes destino")
 
-    _require_live(body)
+    assert_live(body.dry_run, body.confirm, "collab-clone")
     if body.dry_run:
-        return {
-            "ok": True,
-            "mode": "dry_run",
-            "would": "clone",
-            "codigo": codigo,
-            "from_device": body.from_device,
-            "to_devices": dests,
-        }
+        return preview(
+            "clone",
+            codigo=codigo,
+            from_device=body.from_device,
+            to_devices=dests,
+        )
 
     profile = get_collab(codigo) or {}
     src_conn = None
@@ -381,24 +411,28 @@ def collab_clone_now(body: ClockCloneIn, _user: dict = Depends(get_current_user)
         copy_to_device(codigo, body.from_device)
         for n in dests:
             copy_to_device(codigo, n)
-        upsert_collab({
-            "codigo": codigo,
-            "nombre": snap["nombre"],
-            "card_no": snap["card"],
-            "password_device": snap["password"],
-            "has_fingerprint": len(snap["fingers"]) > 0,
-            "dispositivos": list({body.from_device, *dests}),
-        })
+        upsert_collab(
+            {
+                "codigo": codigo,
+                "nombre": snap["nombre"],
+                "card_no": snap["card"],
+                "password_device": snap["password"],
+                "has_fingerprint": len(snap["fingers"]) > 0,
+                "dispositivos": list({body.from_device, *dests}),
+            }
+        )
     except Exception:
         pass
 
-    results = [{
-        "device": body.from_device,
-        "ok": True,
-        "role": "source",
-        "fingers_copied": len(snap["fingers"]),
-        "fingers_source": len(snap["fingers"]),
-    }]
+    results = [
+        {
+            "device": body.from_device,
+            "ok": True,
+            "role": "source",
+            "fingers_copied": len(snap["fingers"]),
+            "fingers_source": len(snap["fingers"]),
+        }
+    ]
     for name in dests:
         dev = _clock_row(name)
         if not dev:
@@ -432,24 +466,27 @@ def collab_clone_now(body: ClockCloneIn, _user: dict = Depends(get_current_user)
                         copied += 1
                     except Exception as e2:
                         err = f"{err} | {e2}"
-            results.append({
-                "device": name,
-                "ok": True,
-                "mode": "live",
-                "fingers_copied": copied,
-                "fingers_source": len(snap["fingers"]),
-                "finger_errors": err[:300],
-                "dest_uid": dest_uid,
-            })
+            results.append(
+                {
+                    "device": name,
+                    "ok": True,
+                    "mode": "live",
+                    "fingers_copied": copied,
+                    "fingers_source": len(snap["fingers"]),
+                    "finger_errors": err[:300],
+                    "dest_uid": dest_uid,
+                }
+            )
         except Exception as e:
             results.append({"device": name, "ok": False, "error": str(e)})
         finally:
             _zk_close(conn)
+            
     return {"ok": True, "mode": "live", "results": results}
 
 
 @router.post("/collab-delete-clocks")
-def collab_delete_now(body: ClockDeleteIn, _user: dict = Depends(get_current_user)):
+def collab_delete_now(body: ClockDeleteIn, _user: dict = Depends(require_permission("zk.delete"))):
     from app.services.collaborators import delete_collab, get_collab
 
     profile = get_collab(body.codigo) or {}
@@ -459,16 +496,14 @@ def collab_delete_now(body: ClockDeleteIn, _user: dict = Depends(get_current_use
         if str(n).strip()
     ]
 
-    _require_live(body)
+    assert_live(body.dry_run, body.confirm, "collab-delete-clocks")
     if body.dry_run:
-        return {
-            "ok": True,
-            "mode": "dry_run",
-            "would": "delete_user_on_clocks",
-            "codigo": body.codigo,
-            "targets": targets,
-            "remove_profile": body.remove_profile,
-        }
+        return preview(
+            "delete_clocks",
+            codigo=body.codigo,
+            targets=targets,
+            remove_profile=body.remove_profile,
+        )
 
     results = []
     for name in targets:

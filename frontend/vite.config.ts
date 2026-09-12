@@ -11,9 +11,9 @@ export default defineConfig({
       registerType: "autoUpdate",
       includeAssets: ["favicon.ico", "apple-touch-icon.png"],
       manifest: {
-        name: "Visualizador de Ponches · César Iglesias",
-        short_name: "Ponches",
-        description: "Consola de asistencia biométrica",
+        name: "Sistema de Gestión Biométrica",
+        short_name: "Biometría",
+        description: "Plataforma de asistencia, biometría y operaciones TI",
         theme_color: "#dc2626",
         background_color: "#fff7f7",
         display: "standalone",
@@ -28,8 +28,8 @@ export default defineConfig({
     }),
   ],
   server: {
-    port: 3007,
+    port: 3015,
     strictPort: true,
-    proxy: { "/api": { target: "http://127.0.0.1:8012", changeOrigin: true } },
+    proxy: { "/api": { target: "http://127.0.0.1:8015", changeOrigin: true } },
   },
 });

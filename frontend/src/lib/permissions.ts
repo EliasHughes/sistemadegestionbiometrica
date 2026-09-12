@@ -1,26 +1,31 @@
-import type { AppUser, ScreenKey } from "../types";
+import type { AppUser, OperationKey, ScreenKey } from "../types";
 import { APP_MODULES } from "../types";
 
-/**
- * Verifica si el usuario tiene permiso para ver una pantalla.
- * - super_admin y admin tienen acceso total por defecto.
- * - El resto depende de lo que el admin haya marcado en screens.
- */
+const ADMIN_ROLES = new Set(["super_admin", "admin"]);
+
 export function canAccessScreen(user: AppUser | null, screen: ScreenKey): boolean {
   if (!user) return false;
 
   const role = user.role?.toLowerCase() ?? "";
-  if (role === "super_admin" || role === "admin") {
+  if (ADMIN_ROLES.has(role)) {
     return true;
   }
 
   return !!user.permissions?.screens?.[screen];
 }
 
-/**
- * Devuelve solo los módulos que el usuario puede ver.
- * Usado por el menú lateral / navegación.
- */
+export function canPerform(user: AppUser | null, operation: OperationKey): boolean {
+  if (!user) return false;
+
+  const role = user.role?.toLowerCase() ?? "";
+  if (ADMIN_ROLES.has(role)) {
+    return true;
+  }
+
+  const ops = user.permissions?.operations ?? user.operations ?? [];
+  return ops.includes(operation);
+}
+
 export function getVisibleModules(user: AppUser | null) {
   if (!user) return [];
 
