@@ -13,6 +13,7 @@ from app.api.routes import users as users_api
 from app.api.settings import router as settings_router
 from app.core.config import settings
 from app.core.errors import RequestIdMiddleware, register_exception_handlers
+from app.api.routes import fiorella
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,7 +65,7 @@ app.include_router(schema.router, prefix="/api")
 app.include_router(exports.router, prefix="/api")
 app.include_router(payroll.router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
-
+app.include_router(fiorella.router, prefix="/api/v1")
 
 def _optional(mod_name: str, attr: str = "router") -> None:
     try:
@@ -73,12 +74,10 @@ def _optional(mod_name: str, attr: str = "router") -> None:
     except Exception as exc:
         log.warning("router %s no cargado: %s", mod_name, exc)
 
-
 _optional("collab_sync")
 _optional("remote")
 _optional("collaborators")
 _optional("devices")
-
 
 @app.get("/")
 def root():

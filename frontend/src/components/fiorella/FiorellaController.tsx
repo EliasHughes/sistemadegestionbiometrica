@@ -1,6 +1,6 @@
 // frontend/src/components/fiorella/FiorellaController.tsx
 import { useEffect, useMemo, useRef, useState } from "react";
-import Fiorella from "./Fiorella";
+import Fiorella, { ChatMessage } from "./Fiorella";
 import { FiorellaBehaviorEngine } from "./FiorellaBehavior";
 import type { FiorellaAction, FiorellaEvents } from "./types";
 
@@ -18,25 +18,14 @@ function pathKey() {
   const p = window.location.pathname || "/login";
   return TALK[p] ? p : "default";
 }
+
 function pick(arr: string[]) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-// Deambular por defecto cuando no hay eventos reales del dashboard todavía.
 const WANDER_POOL: FiorellaAction[] = ["walk", "idle", "idle", "point", "jump"];
 
 type FiorellaControllerProps = {
-  /**
-   * Eventos reales del dashboard (Fase 2). Opcional a propósito: si no se
-   * pasa nada, Fiorella se comporta igual que la versión anterior
-   * (deambula sola). Ejemplo de uso futuro desde Dashboard.tsx:
-   *
-   *   <FiorellaController events={{
-   *     offlineDevices: health.offlineDevices,
-   *     syncError: health.lastSyncFailed,
-   *     newPunch: latestPunchId !== lastSeenPunchId,
-   *   }} />
-   */
   events?: FiorellaEvents;
 };
 
@@ -46,6 +35,12 @@ export default function FiorellaController({ events = {} }: FiorellaControllerPr
   const [x, setX] = useState(48);
   const [facing, setFacing] = useState<1 | -1>(1);
   const [line, setLine] = useState("¡Hola! Soy Fiorella.");
+
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [currentUser, setCurrentUser] = useState<{ id: string; name: string } | null>(null);
+
   const engine = useRef(new FiorellaBehaviorEngine());
   const tabHidden = useRef(false);
   const reducedMotion = useMemo(
@@ -53,16 +48,66 @@ export default function FiorellaController({ events = {} }: FiorellaControllerPr
     []
   );
 
-  // Frases por ruta (mismo comportamiento que la versión anterior).
   useEffect(() => {
-    if (hidden) return;
+    const rawUser = localStorage.getItem("user") || localStorage.getItem("auth_user");
+    let activeUser = { id: "guest", name: "Usuario" };
+
+    if (rawUser) {
+      try {
+        const parsed = JSON.parse(rawUser);
+        activeUser = {
+          id: parsed.id || parsed.usuario_id || "user_1",
+          name: parsed.nombre || parsed.username || "Usuario",
+        };
+      } catch (e) {}
+    }
+
+    setCurrentUser(activeUser);
+
+    const sessionKey = `fiorella_session_${activeUser.id}`;
+    const localHistory = localStorage.getItem(sessionKey);
+
+    let parsedMessages: ChatMessage[] = [];
+    if (localHistory) {
+      try {
+        const parsed = JSON.parse(localHistory);
+        if (Array.isArray(parsed)) {
+          parsedMessages = parsed;
+        }
+      } catch (e) {
+        parsedMessages = [];
+      }
+    }
+
+    if (parsedMessages.length > 0) {
+      setMessages(parsedMessages);
+    } else {
+      const initialGreeting: ChatMessage = {
+        id: "init",
+        sender: "fiorella",
+        text: `¡Hola ${activeUser.name}! Estoy lista para ayudarte en el módulo ${pathKey()}. ¿Qué deseas realizar?`,
+      };
+      setMessages([initialGreeting]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (currentUser && Array.isArray(messages) && messages.length > 0) {
+      localStorage.setItem(
+        `fiorella_session_${currentUser.id}`,
+        JSON.stringify(messages.slice(-20))
+      );
+    }
+  }, [messages, currentUser]);
+
+  useEffect(() => {
+    if (hidden || isChatOpen) return;
     const talk = () => setLine(pick(TALK[pathKey()] || TALK.default));
     talk();
     const id = window.setInterval(talk, 8000);
     return () => window.clearInterval(id);
-  }, [hidden]);
+  }, [hidden, isChatOpen]);
 
-  // Pausar el bucle de decisión cuando la pestaña no es visible (sección 12: rendimiento).
   useEffect(() => {
     const onVisibility = () => {
       tabHidden.current = document.hidden;
@@ -71,9 +116,8 @@ export default function FiorellaController({ events = {} }: FiorellaControllerPr
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, []);
 
-  // Bucle de decisión: primero mira eventos reales, si no hay ninguno, deambula.
   useEffect(() => {
-    if (hidden) return;
+    if (hidden || isChatOpen) return;
     let cancelled = false;
     let timer = 0;
 
@@ -103,19 +147,82 @@ export default function FiorellaController({ events = {} }: FiorellaControllerPr
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [events, hidden, reducedMotion]);
+  }, [events, hidden, reducedMotion, isChatOpen]);
+
+  const toggleChat = () => {
+    const nextState = !isChatOpen;
+    setIsChatOpen(nextState);
+    if (nextState) {
+      setAction("point");
+    } else {
+      setAction("idle");
+    }
+  };
+
+  const handleSendMessage = async (text: string) => {
+    if (!text.trim() || loading) return;
+
+    const userMsg: ChatMessage = {
+      id: Date.now().toString(),
+      sender: "user",
+      text,
+    };
+
+    setMessages((prev) => [...(Array.isArray(prev) ? prev : []), userMsg]);
+    setLoading(true);
+    setAction("walk");
+
+    try {
+      // Ruta corregida a /api/v1/fiorella/chat
+      const res = await fetch("/api/v1/fiorella/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: currentUser?.id || "guest",
+          user_name: currentUser?.name || "Usuario",
+          message: text,
+          active_module: pathKey(),
+        }),
+      });
+
+      if (!res.ok) throw new Error("Error en la respuesta del servidor");
+
+      const data = await res.json();
+
+      const aiMsg: ChatMessage = {
+        id: (Date.now() + 1).toString(),
+        sender: "fiorella",
+        text: data.respuesta || "Solicitud procesada con éxito.",
+      };
+
+      setMessages((prev) => [...(Array.isArray(prev) ? prev : []), aiMsg]);
+      setAction(data.animacion || "point");
+    } catch (err) {
+      setMessages((prev) => [
+        ...(Array.isArray(prev) ? prev : []),
+        {
+          id: Date.now().toString(),
+          sender: "fiorella",
+          text: "Ocurrió una desconexión momentánea con el servidor de IA.",
+        },
+      ]);
+      setAction("idle");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   if (hidden) {
     return (
       <button
         type="button"
-        className="fixed bottom-4 right-4 z-[60] rounded-full bg-[#c8102e] text-white text-xs font-semibold px-3 py-2"
+        className="fixed bottom-4 right-4 z-[60] rounded-full bg-[#c8102e] text-white text-xs font-semibold px-3 py-2 shadow-lg hover:bg-[#a11e30]"
         onClick={() => {
           localStorage.removeItem("hide-fiorella");
           setHidden(false);
         }}
       >
-        Fiorella
+        💬 Fiorella
       </button>
     );
   }
@@ -124,16 +231,26 @@ export default function FiorellaController({ events = {} }: FiorellaControllerPr
     <Fiorella
       action={action}
       x={x}
-      facing={facing}
+      facing={facing === -1 ? "left" : "right"}
       line={line}
       reducedMotion={reducedMotion}
-      onSpriteClick={() => {
-        setAction("jump");
-        setLine(pick(TALK[pathKey()] || TALK.default));
-      }}
+      onSpriteClick={toggleChat}
       onHide={() => {
         localStorage.setItem("hide-fiorella", "1");
         setHidden(true);
+      }}
+      isChatOpen={isChatOpen}
+      messages={Array.isArray(messages) ? messages : []}
+      loading={loading}
+      activeModule={pathKey()}
+      onSendMessage={handleSendMessage}
+      onCloseChat={() => {
+        setIsChatOpen(false);
+        setAction("idle");
+      }}
+      onMinimizeChat={() => {
+        setIsChatOpen(false);
+        setAction("idle");
       }}
     />
   );
