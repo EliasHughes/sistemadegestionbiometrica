@@ -29,13 +29,20 @@ type FiorellaControllerProps = {
   events?: FiorellaEvents;
 };
 
+type StoredUser = {
+  id?: string | number;
+  usuario_id?: string | number;
+  username?: string;
+  nombre?: string;
+  name?: string;
+};
+
 export default function FiorellaController({ events = {} }: FiorellaControllerProps) {
   const [hidden, setHidden] = useState(() => localStorage.getItem("hide-fiorella") === "1");
   const [action, setAction] = useState<FiorellaAction>("idle");
   const [x, setX] = useState(48);
   const [facing, setFacing] = useState<1 | -1>(1);
   const [line, setLine] = useState("¡Hola! Soy Fiorella.");
-
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -45,36 +52,36 @@ export default function FiorellaController({ events = {} }: FiorellaControllerPr
   const tabHidden = useRef(false);
   const reducedMotion = useMemo(
     () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false,
-    []
+    [],
   );
 
   useEffect(() => {
     const rawUser = localStorage.getItem("user") || localStorage.getItem("auth_user");
-    let activeUser = { id: "guest", name: "Usuario" };
+    let activeUser: { id: string; name: string } = { id: "guest", name: "Usuario" };
 
     if (rawUser) {
       try {
-        const parsed = JSON.parse(rawUser);
+        const parsed = JSON.parse(rawUser) as StoredUser;
         activeUser = {
-          id: parsed.id || parsed.usuario_id || "user_1",
-          name: parsed.nombre || parsed.username || "Usuario",
+          id: String(parsed.id ?? parsed.usuario_id ?? parsed.username ?? "user_1"),
+          name: String(parsed.nombre ?? parsed.name ?? parsed.username ?? "Usuario"),
         };
-      } catch (e) {}
+      } catch {
+        // Mantener usuario invitado si el storage contiene JSON inválido.
+      }
     }
 
     setCurrentUser(activeUser);
 
     const sessionKey = `fiorella_session_${activeUser.id}`;
     const localHistory = localStorage.getItem(sessionKey);
-
     let parsedMessages: ChatMessage[] = [];
+
     if (localHistory) {
       try {
         const parsed = JSON.parse(localHistory);
-        if (Array.isArray(parsed)) {
-          parsedMessages = parsed;
-        }
-      } catch (e) {
+        if (Array.isArray(parsed)) parsedMessages = parsed;
+      } catch {
         parsedMessages = [];
       }
     }
@@ -82,20 +89,19 @@ export default function FiorellaController({ events = {} }: FiorellaControllerPr
     if (parsedMessages.length > 0) {
       setMessages(parsedMessages);
     } else {
-      const initialGreeting: ChatMessage = {
+      setMessages([{
         id: "init",
         sender: "fiorella",
         text: `¡Hola ${activeUser.name}! Estoy lista para ayudarte en el módulo ${pathKey()}. ¿Qué deseas realizar?`,
-      };
-      setMessages([initialGreeting]);
+      }]);
     }
   }, []);
 
   useEffect(() => {
-    if (currentUser && Array.isArray(messages) && messages.length > 0) {
+    if (currentUser && messages.length > 0) {
       localStorage.setItem(
         `fiorella_session_${currentUser.id}`,
-        JSON.stringify(messages.slice(-20))
+        JSON.stringify(messages.slice(-20)),
       );
     }
   }, [messages, currentUser]);
@@ -129,7 +135,6 @@ export default function FiorellaController({ events = {} }: FiorellaControllerPr
       if (!tabHidden.current) {
         const next = engine.current.decide(events, wander);
         setAction(next);
-
         if (next === "walk" && !reducedMotion) {
           setX((prevX) => {
             const target = 20 + Math.random() * maxX();
@@ -152,61 +157,70 @@ export default function FiorellaController({ events = {} }: FiorellaControllerPr
   const toggleChat = () => {
     const nextState = !isChatOpen;
     setIsChatOpen(nextState);
-    if (nextState) {
-      setAction("point");
-    } else {
-      setAction("idle");
-    }
+    setAction(nextState ? "point" : "idle");
   };
 
   const handleSendMessage = async (text: string) => {
-    if (!text.trim() || loading) return;
+    const trimmed = text.trim();
+    if (!trimmed || loading) return;
 
     const userMsg: ChatMessage = {
-      id: Date.now().toString(),
+      id: `${Date.now()}-user`,
       sender: "user",
-      text,
+      text: trimmed,
     };
+    const updatedMessages = [...messages, userMsg];
 
-    setMessages((prev) => [...(Array.isArray(prev) ? prev : []), userMsg]);
+    setMessages(updatedMessages);
     setLoading(true);
     setAction("walk");
 
     try {
-      // Ruta corregida a /api/v1/fiorella/chat
+      const token = localStorage.getItem("token") || localStorage.getItem("access_token");
+      const headers: HeadersInit = { "Content-Type": "application/json" };
+      if (token) headers.Authorization = `Bearer ${token}`;
+
       const res = await fetch("/api/v1/fiorella/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
-          user_id: currentUser?.id || "guest",
-          user_name: currentUser?.name || "Usuario",
-          message: text,
+          message: trimmed,
           active_module: pathKey(),
+          history: updatedMessages.slice(-10),
         }),
       });
 
-      if (!res.ok) throw new Error("Error en la respuesta del servidor");
-
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = typeof data?.detail === "string" ? data.detail : `HTTP ${res.status}`;
+        throw new Error(detail);
+      }
 
       const aiMsg: ChatMessage = {
-        id: (Date.now() + 1).toString(),
+        id: `${Date.now()}-fiorella`,
         sender: "fiorella",
         text: data.respuesta || "Solicitud procesada con éxito.",
       };
 
-      setMessages((prev) => [...(Array.isArray(prev) ? prev : []), aiMsg]);
-      setAction(data.animacion || "point");
+      setMessages((prev) => [...prev, aiMsg]);
+      if (data.animacion) setAction(data.animacion as FiorellaAction);
+
+      // La acción de navegación/reporte/confirmación queda disponible para el
+      // componente de chat si Fiorella la devuelve. No se ejecuta aquí para
+      // evitar acciones duplicadas.
     } catch (err) {
+      console.error("Fiorella chat error:", err);
       setMessages((prev) => [
-        ...(Array.isArray(prev) ? prev : []),
+        ...prev,
         {
-          id: Date.now().toString(),
+          id: `${Date.now()}-error`,
           sender: "fiorella",
-          text: "Ocurrió una desconexión momentánea con el servidor de IA.",
+          text: err instanceof Error
+            ? `No pude completar la solicitud: ${err.message}`
+            : "Ocurrió una desconexión momentánea con el servidor de IA.",
         },
       ]);
-      setAction("idle");
+      setAction("alert");
     } finally {
       setLoading(false);
     }
@@ -240,7 +254,7 @@ export default function FiorellaController({ events = {} }: FiorellaControllerPr
         setHidden(true);
       }}
       isChatOpen={isChatOpen}
-      messages={Array.isArray(messages) ? messages : []}
+      messages={messages}
       loading={loading}
       activeModule={pathKey()}
       onSendMessage={handleSendMessage}

@@ -26,15 +26,36 @@ log = logging.getLogger("poche")
 async def lifespan(app: FastAPI):
     try:
         from app.services.sql_indexes import ensure_indexes
+
         result = ensure_indexes()
+
         log.info(
             "índices SQL: %s created=%s existing=%s",
             result.get("status"),
             result.get("created"),
             result.get("existing"),
         )
+
     except Exception as exc:
         log.warning("ensure_indexes falló: %s", exc)
+
+    # ============================================================
+    # FIORELLA ENTERPRISE - MONITOR DE INCIDENTES
+    # ============================================================
+    try:
+        from app.services.fiorella_monitor import scan_and_register_incidents
+
+        result = scan_and_register_incidents()
+
+        log.info(
+            "Fiorella monitor: status=%s incidents=%s",
+            result.get("status"),
+            result.get("incidents"),
+        )
+
+    except Exception as exc:
+        log.warning("Fiorella monitor no pudo iniciarse: %s", exc)
+
     yield
 
 
