@@ -7,16 +7,15 @@ import os
 from typing import Any
 
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from openai import OpenAI
 
+from app.services import fiorella_tools as tools
 from app.services.fiorella_audit import audit
 from app.services.fiorella_memory import (
     get_or_create_conversation,
     load_history,
     save_message,
 )
-from app.services import fiorella_tools as tools
 
 
 # ============================================================
@@ -28,69 +27,91 @@ load_dotenv()
 log = logging.getLogger("fiorella")
 
 
-API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+OPENROUTER_BASE_URL = os.getenv(
+    "OPENROUTER_BASE_URL",
+    "https://openrouter.ai/api/v1",
+).strip()
 
-PRIMARY_MODEL = os.getenv(
+
+MODEL = os.getenv(
     "FIORELLA_MODEL",
-    "gemini-3.8-flash",
+    "openrouter/free",
 ).strip()
 
-FALLBACK_MODEL = os.getenv(
-    "FIORELLA_FALLBACK_MODEL",
-    "gemini-2.5-flash",
-).strip()
 
-MAX_HISTORY = int(
-    os.getenv(
-        "FIORELLA_MAX_HISTORY",
-        "20",
-    )
-)
-
-GEMINI_RETRIES = max(
+MAX_HISTORY = max(
     1,
     int(
         os.getenv(
-            "FIORELLA_GEMINI_RETRIES",
+            "FIORELLA_MAX_HISTORY",
+            "20",
+        )
+    ),
+)
+
+
+AI_RETRIES = max(
+    1,
+    int(
+        os.getenv(
+            "FIORELLA_AI_RETRIES",
             "2",
         )
     ),
 )
 
 
+AI_TIMEOUT = max(
+    10,
+    int(
+        os.getenv(
+            "FIORELLA_AI_TIMEOUT",
+            "45",
+        )
+    ),
+)
+
+
 # ============================================================
-# CLIENTE
+# CLIENTE OPENROUTER
 # ============================================================
 
-client: genai.Client | None = None
+_client: OpenAI | None = None
 
 
-def get_client() -> genai.Client | None:
+def get_client() -> OpenAI | None:
     """
-    Crea el cliente Gemini de forma perezosa.
+    Devuelve un cliente compatible con OpenAI,
+    pero conectado exclusivamente a OpenRouter.
 
-    Esto evita dejar una API key capturada incorrectamente
-    durante el import si .env todavía no estaba cargado.
+    NO utiliza OPENAI_API_KEY.
+    NO conecta directamente con api.openai.com.
     """
 
-    global client
+    global _client
 
-    if client is not None:
-        return client
+    if _client is not None:
+        return _client
 
     api_key = os.getenv(
-        "GEMINI_API_KEY",
+        "OPENROUTER_API_KEY",
         "",
     ).strip()
 
     if not api_key:
         return None
 
-    client = genai.Client(
+    _client = OpenAI(
         api_key=api_key,
+        base_url=OPENROUTER_BASE_URL,
+        timeout=AI_TIMEOUT,
+        max_retries=0,
+        default_headers={
+            "X-Title": "Fiorella - Sistema Biometrico",
+        },
     )
 
-    return client
+    return _client
 
 
 # ============================================================
@@ -98,83 +119,106 @@ def get_client() -> genai.Client | None:
 # ============================================================
 
 SYSTEM_PROMPT = """
-Eres Fiorella, la asistente virtual oficial del Sistema de Gestión Biométrica.
+Eres Fiorella, la asistente virtual oficial del
+Sistema de Gestión Biométrica.
 
-Tu función es ayudar a los usuarios autenticados a trabajar con los datos
-reales y funcionalidades disponibles en el sistema.
+Trabajas integrada dentro de una aplicación empresarial que administra:
 
-CAPACIDADES:
+- empleados;
+- colaboradores;
+- ponches;
+- horarios;
+- relojes biométricos ZKTeco;
+- inventario biométrico;
+- sincronizaciones;
+- ponches remotos;
+- reportes;
+- auditoría;
+- usuarios;
+- métricas operativas.
 
-- consultar información real del sistema;
-- consultar resumen de ponches;
-- consultar empleados;
-- consultar relojes biométricos;
-- consultar salud de dispositivos;
-- analizar métricas;
-- explicar los módulos de la aplicación;
-- analizar tendencias;
-- navegar a módulos;
-- preparar operaciones ZKTeco;
-- generar información para reportes;
-- utilizar memoria conversacional.
+Tu objetivo es ayudar al usuario utilizando información REAL del sistema.
 
-REGLAS:
+REGLAS OBLIGATORIAS:
 
 1. Responde siempre en español.
 
-2. Nunca inventes información interna.
+2. No inventes información interna.
 
-3. Cuando una pregunta solicite datos del sistema,
-   utiliza las herramientas disponibles.
+3. Cuando el usuario solicite datos del sistema debes utilizar
+   una herramienta si existe una herramienta adecuada.
 
-4. Nunca generes ni ejecutes SQL arbitrario proveniente del modelo.
+4. Para preguntas acerca de:
+   - cantidad de relojes;
+   - relojes online u offline;
+   - salud de dispositivos;
+   - empleados;
+   - colaboradores;
+   - ponches;
+   - tendencias;
+   - métricas;
 
-5. Nunca reveles:
+   debes consultar las herramientas disponibles.
+
+5. Nunca generes ni ejecutes SQL arbitrario enviado por el modelo.
+
+6. Nunca reveles:
    - contraseñas;
-   - tokens;
    - API keys;
+   - tokens;
    - hashes;
    - secretos;
    - cadenas de conexión.
 
-6. Las operaciones de escritura o eliminación sobre relojes
-   requieren confirmación.
+7. Las operaciones que puedan modificar datos o relojes deben
+   respetar los permisos y mecanismos de confirmación del sistema.
 
-7. Respeta los permisos del usuario.
+8. Si una herramienta falla, indícalo claramente.
 
-8. Si una herramienta no puede obtener información,
-   indícalo claramente.
+9. Utiliza el módulo actual proporcionado en el contexto.
 
-9. Sé clara, breve y profesional.
+10. Sé clara, profesional y relativamente breve.
 
-10. Para datos del dashboard, relojes, ponches o empleados,
-    utiliza una herramienta antes de responder.
+11. Si puedes responder utilizando datos reales obtenidos mediante
+    una herramienta, no respondas con datos aproximados.
 
-FORMATO FINAL:
+RESPUESTA FINAL:
 
-Devuelve JSON válido con esta estructura:
-
-{
-    "respuesta": "texto para el usuario",
-    "animacion": "idle|point|walk|jump|think|alert",
-    "action": null
-}
-
-Cuando sea necesario puedes devolver:
+Cuando hayas terminado de utilizar las herramientas necesarias,
+responde preferiblemente con JSON válido en esta forma:
 
 {
-    "respuesta": "texto",
-    "animacion": "point",
-    "action": {
-        "type": "navigate",
-        "route": "/devices"
-    }
+  "respuesta": "respuesta para el usuario",
+  "animacion": "idle",
+  "action": null
 }
+
+Animaciones válidas:
+
+idle
+point
+walk
+jump
+think
+alert
+
+Para solicitar navegación:
+
+{
+  "respuesta": "Abriré el módulo de dispositivos.",
+  "animacion": "point",
+  "action": {
+    "type": "navigate",
+    "route": "/devices"
+  }
+}
+
+No incluyas bloques Markdown alrededor del JSON.
 """
 
 
 # ============================================================
-# USUARIO
+# IDENTIFICACIÓN DEL USUARIO
 # ============================================================
 
 def _user_key(
@@ -183,6 +227,7 @@ def _user_key(
 
     return str(
         user.get("id")
+        or user.get("usuario_id")
         or user.get("username")
         or user.get("email")
         or "unknown"
@@ -190,223 +235,258 @@ def _user_key(
 
 
 # ============================================================
-# DECLARACIONES DE HERRAMIENTAS
+# TOOLS / FUNCTION CALLING
 # ============================================================
 
-def _declarations() -> list[dict[str, Any]]:
+def _tool_definitions() -> list[dict[str, Any]]:
+    """
+    OpenRouter utiliza el esquema OpenAI-compatible para tools.
+    """
 
     return [
-
         {
-            "name": "punch_summary",
-            "description": (
-                "Obtiene un resumen real de los ponches "
-                "registrados hoy en el sistema."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            },
-        },
-
-        {
-            "name": "search_employee",
-            "description": (
-                "Busca empleados o colaboradores "
-                "por nombre o código."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                    },
-                    "limit": {
-                        "type": "integer",
-                    },
-                },
-                "required": [
-                    "query",
-                ],
-            },
-        },
-
-        {
-            "name": "search_punches",
-            "description": (
-                "Consulta registros de ponches por rango "
-                "de fechas, dispositivo o empleado."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-
-                    "fecha_desde": {
-                        "type": "string",
-                    },
-
-                    "fecha_hasta": {
-                        "type": "string",
-                    },
-
-                    "dispositivo": {
-                        "type": "string",
-                    },
-
-                    "query": {
-                        "type": "string",
-                    },
-
-                    "limit": {
-                        "type": "integer",
-                    },
+            "type": "function",
+            "function": {
+                "name": "punch_summary",
+                "description": (
+                    "Obtiene un resumen real de los ponches "
+                    "registrados hoy."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
                 },
             },
         },
 
         {
-            "name": "device_health",
-            "description": (
-                "Consulta el estado operativo real "
-                "de los relojes biométricos."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            },
-        },
-
-        {
-            "name": "data_analysis",
-            "description": (
-                "Analiza tendencias de ponches "
-                "de los últimos días."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "days": {
-                        "type": "integer",
+            "type": "function",
+            "function": {
+                "name": "search_employee",
+                "description": (
+                    "Busca empleados o colaboradores "
+                    "por nombre o código."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": (
+                                "Nombre, apellido o código."
+                            ),
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                        },
                     },
+                    "required": [
+                        "query",
+                    ],
+                    "additionalProperties": False,
                 },
             },
         },
 
         {
-            "name": "navigate_to_module",
-            "description": (
-                "Solicita al frontend navegar "
-                "hacia un módulo."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "module": {
-                        "type": "string",
+            "type": "function",
+            "function": {
+                "name": "search_punches",
+                "description": (
+                    "Consulta registros reales de ponches."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "fecha_desde": {
+                            "type": "string",
+                        },
+                        "fecha_hasta": {
+                            "type": "string",
+                        },
+                        "dispositivo": {
+                            "type": "string",
+                        },
+                        "query": {
+                            "type": "string",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 500,
+                        },
                     },
+                    "additionalProperties": False,
                 },
-                "required": [
-                    "module",
-                ],
             },
         },
 
         {
-            "name": "zkteco_push_employee",
-            "description": (
-                "Prepara la sincronización de un colaborador "
-                "hacia uno o varios relojes."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
+            "type": "function",
+            "function": {
+                "name": "device_health",
+                "description": (
+                    "Consulta el estado operativo real "
+                    "de los relojes biométricos incluyendo "
+                    "equipos online y offline."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            },
+        },
 
-                    "codigo": {
-                        "type": "string",
+        {
+            "type": "function",
+            "function": {
+                "name": "data_analysis",
+                "description": (
+                    "Analiza tendencias de ponches "
+                    "de los últimos días."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "days": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 365,
+                        },
                     },
+                    "additionalProperties": False,
+                },
+            },
+        },
 
-                    "dispositivos": {
-                        "type": "array",
-                        "items": {
+        {
+            "type": "function",
+            "function": {
+                "name": "navigate_to_module",
+                "description": (
+                    "Solicita al frontend navegar "
+                    "hacia un módulo de la aplicación."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "module": {
                             "type": "string",
                         },
                     },
+                    "required": [
+                        "module",
+                    ],
+                    "additionalProperties": False,
                 },
-                "required": [
-                    "codigo",
-                    "dispositivos",
-                ],
             },
         },
 
         {
-            "name": "zkteco_clone_employee",
-            "description": (
-                "Prepara la clonación de un colaborador "
-                "desde un reloj hacia otros."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-
-                    "codigo": {
-                        "type": "string",
-                    },
-
-                    "from_device": {
-                        "type": "string",
-                    },
-
-                    "to_devices": {
-                        "type": "array",
-                        "items": {
+            "type": "function",
+            "function": {
+                "name": "zkteco_push_employee",
+                "description": (
+                    "Prepara la sincronización de un colaborador "
+                    "hacia uno o varios relojes ZKTeco."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "codigo": {
                             "type": "string",
                         },
+                        "dispositivos": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                            },
+                        },
                     },
+                    "required": [
+                        "codigo",
+                        "dispositivos",
+                    ],
+                    "additionalProperties": False,
                 },
-                "required": [
-                    "codigo",
-                    "from_device",
-                    "to_devices",
-                ],
             },
         },
 
         {
-            "name": "zkteco_delete_employee",
-            "description": (
-                "Prepara la eliminación de un colaborador "
-                "de uno o varios relojes."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-
-                    "codigo": {
-                        "type": "string",
-                    },
-
-                    "dispositivos": {
-                        "type": "array",
-                        "items": {
+            "type": "function",
+            "function": {
+                "name": "zkteco_clone_employee",
+                "description": (
+                    "Prepara la clonación de un colaborador "
+                    "desde un reloj hacia otros relojes."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "codigo": {
                             "type": "string",
                         },
+                        "from_device": {
+                            "type": "string",
+                        },
+                        "to_devices": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                            },
+                        },
                     },
+                    "required": [
+                        "codigo",
+                        "from_device",
+                        "to_devices",
+                    ],
+                    "additionalProperties": False,
                 },
-                "required": [
-                    "codigo",
-                    "dispositivos",
-                ],
+            },
+        },
+
+        {
+            "type": "function",
+            "function": {
+                "name": "zkteco_delete_employee",
+                "description": (
+                    "Prepara la eliminación de un colaborador "
+                    "de uno o varios relojes."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "codigo": {
+                            "type": "string",
+                        },
+                        "dispositivos": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                            },
+                        },
+                    },
+                    "required": [
+                        "codigo",
+                        "dispositivos",
+                    ],
+                    "additionalProperties": False,
+                },
             },
         },
     ]
 
 
 # ============================================================
-# EJECUTAR HERRAMIENTA
+# EJECUCIÓN DE TOOLS
 # ============================================================
 
-def _execute(
+def _execute_tool(
     name: str,
     args: dict[str, Any],
     user: dict[str, Any],
@@ -478,151 +558,101 @@ def _execute(
 
 
 # ============================================================
-# GENERACIÓN GEMINI CON RETRY Y FALLBACK
+# LLAMADA A OPENROUTER
 # ============================================================
 
 async def _generate(
-    *,
-    contents: list[Any],
-    config: types.GenerateContentConfig,
+    messages: list[dict[str, Any]],
+    use_tools: bool = True,
 ):
+    """
+    Ejecuta una petición a OpenRouter.
 
-    gemini = get_client()
+    openrouter/free decide automáticamente qué modelo gratuito
+    utilizar y filtra por capacidades requeridas, incluyendo tools.
+    """
 
-    if gemini is None:
+    client = get_client()
+
+    if client is None:
         raise RuntimeError(
-            "GEMINI_API_KEY no configurada."
+            "OPENROUTER_API_KEY no está configurada."
         )
-
-    models: list[str] = []
-
-    for model in (
-        PRIMARY_MODEL,
-        FALLBACK_MODEL,
-    ):
-
-        if (
-            model
-            and model not in models
-        ):
-            models.append(
-                model,
-            )
 
     last_error: Exception | None = None
 
+    for attempt in range(
+        1,
+        AI_RETRIES + 1,
+    ):
 
-    for model in models:
+        try:
 
-        for attempt in range(
-            1,
-            GEMINI_RETRIES + 1,
-        ):
+            log.info(
+                "Fiorella OpenRouter request "
+                "model=%s attempt=%s/%s",
+                MODEL,
+                attempt,
+                AI_RETRIES,
+            )
 
-            try:
+            kwargs: dict[str, Any] = {
+                "model": MODEL,
+                "messages": messages,
+                "temperature": 0.15,
+            }
 
-                log.info(
-                    "Fiorella Gemini request "
-                    "model=%s attempt=%s/%s",
-                    model,
-                    attempt,
-                    GEMINI_RETRIES,
+            if use_tools:
+                kwargs["tools"] = (
+                    _tool_definitions()
                 )
 
-                response = await asyncio.to_thread(
-                    gemini.models.generate_content,
-                    model=model,
-                    contents=contents,
-                    config=config,
+                kwargs["tool_choice"] = "auto"
+
+            response = await asyncio.to_thread(
+                client.chat.completions.create,
+                **kwargs,
+            )
+
+            log.info(
+                "Fiorella OpenRouter OK "
+                "requested_model=%s actual_model=%s",
+                MODEL,
+                getattr(
+                    response,
+                    "model",
+                    "unknown",
+                ),
+            )
+
+            return response
+
+        except Exception as exc:
+
+            last_error = exc
+
+            log.exception(
+                "OpenRouter falló "
+                "attempt=%s/%s error=%s",
+                attempt,
+                AI_RETRIES,
+                exc,
+            )
+
+            if attempt < AI_RETRIES:
+
+                await asyncio.sleep(
+                    1.5 * attempt,
                 )
-
-                log.info(
-                    "Fiorella Gemini OK model=%s",
-                    model,
-                )
-
-                return response, model
-
-            except Exception as exc:
-
-                last_error = exc
-
-                log.exception(
-                    "Gemini falló "
-                    "model=%s attempt=%s/%s error=%s",
-                    model,
-                    attempt,
-                    GEMINI_RETRIES,
-                    exc,
-                )
-
-                if (
-                    attempt
-                    < GEMINI_RETRIES
-                ):
-
-                    await asyncio.sleep(
-                        1.5 * attempt,
-                    )
-
-
-        log.warning(
-            "Fiorella cambia al siguiente "
-            "modelo después de fallar %s",
-            model,
-        )
-
 
     raise RuntimeError(
-        "Todos los modelos Gemini configurados fallaron."
+        "OpenRouter no respondió después "
+        f"de {AI_RETRIES} intentos."
     ) from last_error
 
 
 # ============================================================
-# EXTRAER FUNCTION CALLS
-# ============================================================
-
-def _extract_calls(
-    response: Any,
-) -> list[Any]:
-
-    calls: list[Any] = []
-
-    for candidate in (
-        response.candidates
-        or []
-    ):
-
-        content = getattr(
-            candidate,
-            "content",
-            None,
-        )
-
-        if not content:
-            continue
-
-        for part in (
-            content.parts
-            or []
-        ):
-
-            call = getattr(
-                part,
-                "function_call",
-                None,
-            )
-
-            if call:
-                calls.append(
-                    call,
-                )
-
-    return calls
-
-
-# ============================================================
-# CONVERTIR RESPUESTA FINAL
+# PARSEAR RESPUESTA FINAL
 # ============================================================
 
 def _parse_response(
@@ -638,27 +668,36 @@ def _parse_response(
 
         return {
             "respuesta": (
-                "Gemini respondió sin contenido."
+                "El proveedor de IA respondió "
+                "sin contenido."
             ),
             "animacion": "alert",
             "action": None,
         }
 
+    if text.startswith("```"):
 
-    # Algunos modelos ocasionalmente devuelven fences Markdown.
-    if text.startswith(
-        "```"
-    ):
+        lines = text.splitlines()
 
-        text = text.strip(
-            "`"
-        )
+        if lines:
+            lines = lines[1:]
 
-        if text.lower().startswith(
-            "json"
+        if (
+            lines
+            and lines[-1].strip().startswith(
+                "```"
+            )
         ):
-            text = text[4:].strip()
+            lines = lines[:-1]
 
+        text = "\n".join(
+            lines
+        ).strip()
+
+    if text.lower().startswith(
+        "json\n"
+    ):
+        text = text[5:].strip()
 
     try:
 
@@ -666,28 +705,26 @@ def _parse_response(
             text,
         )
 
-        if not isinstance(
+        if isinstance(
             parsed,
             dict,
         ):
 
-            raise ValueError(
-                "Respuesta JSON no es objeto."
-            )
-
-        return parsed
+            return parsed
 
     except Exception:
 
-        return {
-            "respuesta": text,
-            "animacion": "idle",
-            "action": None,
-        }
+        pass
+
+    return {
+        "respuesta": text,
+        "animacion": "point",
+        "action": None,
+    }
 
 
 # ============================================================
-# PROCESAR CHAT
+# CHAT PRINCIPAL
 # ============================================================
 
 async def procesar_mensaje_usuario(
@@ -697,31 +734,28 @@ async def procesar_mensaje_usuario(
     conversation_id: int | None = None,
 ) -> dict[str, Any]:
 
-    gemini = get_client()
+    client = get_client()
 
-    if gemini is None:
+    if client is None:
 
         return {
             "respuesta": (
-                "Fiorella no tiene una API key "
-                "de Gemini configurada."
+                "Fiorella no tiene configurada "
+                "la API de OpenRouter."
             ),
             "animacion": "alert",
             "action": None,
-            "conversation_id": (
-                conversation_id
-            ),
+            "conversation_id": conversation_id,
             "tools_used": [],
+            "provider": "openrouter",
         }
-
 
     uid = _user_key(
         user,
     )
 
-
     # ========================================================
-    # MEMORIA
+    # CONVERSACIÓN / MEMORIA
     # ========================================================
 
     conversation_id = (
@@ -732,13 +766,11 @@ async def procesar_mensaje_usuario(
         )
     )
 
-
     history = load_history(
         conversation_id,
         uid,
         MAX_HISTORY,
     )
-
 
     save_message(
         conversation_id,
@@ -747,133 +779,146 @@ async def procesar_mensaje_usuario(
         message,
     )
 
-
     # ========================================================
-    # CONTEXTO
+    # CONSTRUIR MENSAJES
     # ========================================================
 
-    contents: list[Any] = []
+    messages: list[
+        dict[str, Any]
+    ] = [
+        {
+            "role": "system",
+            "content": SYSTEM_PROMPT,
+        }
+    ]
 
-    for h in history:
+    for item in history:
 
         role = str(
-            h.get(
+            item.get(
                 "role",
                 "user",
             )
         )
 
-        # Gemini admite "user" y "model".
-        if role == "assistant":
-            role = "model"
-
         if role not in {
             "user",
-            "model",
+            "assistant",
         }:
             continue
 
-        contents.append(
+        content = str(
+            item.get(
+                "content",
+                "",
+            )
+        ).strip()
+
+        if not content:
+            continue
+
+        messages.append(
             {
                 "role": role,
-                "parts": [
-                    {
-                        "text": str(
-                            h.get(
-                                "content",
-                                "",
-                            )
-                        )
-                    }
-                ],
+                "content": content,
             }
         )
 
-
-    contents.append(
+    messages.append(
         {
             "role": "user",
-            "parts": [
-                {
-                    "text": (
-                        "Contexto del usuario:\n"
-                        f"Nombre: "
-                        f"{user.get('name') or user.get('username')}\n"
-                        f"Rol: {user.get('role')}\n"
-                        f"Módulo actual: {active_module}\n\n"
-                        f"Consulta:\n{message}"
-                    )
-                }
-            ],
+            "content": (
+                "CONTEXTO ACTUAL DEL SISTEMA\n"
+                f"Usuario: "
+                f"{user.get('name') or user.get('nombre') or user.get('username')}\n"
+                f"Rol: {user.get('role')}\n"
+                f"Módulo actual: {active_module}\n\n"
+                f"CONSULTA DEL USUARIO:\n"
+                f"{message}"
+            ),
         }
     )
 
-
     tools_used: list[str] = []
-
 
     try:
 
         # ====================================================
-        # PRIMER TURNO
+        # PRIMERA PETICIÓN
         # ====================================================
 
-        first_response, model_used = (
-            await _generate(
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=(
-                        SYSTEM_PROMPT
-                    ),
-                    tools=[
-                        types.Tool(
-                            function_declarations=(
-                                _declarations()
-                            )
-                        )
-                    ],
-                    temperature=0.15,
-                ),
+        response = await _generate(
+            messages,
+            use_tools=True,
+        )
+
+        if not response.choices:
+
+            raise RuntimeError(
+                "OpenRouter no devolvió choices."
             )
+
+        assistant_message = (
+            response.choices[0].message
         )
 
-
-        calls = _extract_calls(
-            first_response,
+        tool_calls = (
+            assistant_message.tool_calls
+            or []
         )
-
 
         # ====================================================
         # FUNCTION CALLING
         # ====================================================
 
-        if calls:
+        if tool_calls:
 
-            function_parts = []
+            assistant_dict = (
+                assistant_message.model_dump(
+                    exclude_none=True,
+                )
+            )
 
-            for call in calls:
+            messages.append(
+                assistant_dict
+            )
+
+            for call in tool_calls:
 
                 name = str(
-                    call.name
+                    call.function.name
                 )
 
-                args = dict(
-                    call.args
-                    or {}
+                raw_arguments = (
+                    call.function.arguments
+                    or "{}"
                 )
 
+                try:
 
-                result = _execute(
+                    args = json.loads(
+                        raw_arguments
+                    )
+
+                    if not isinstance(
+                        args,
+                        dict,
+                    ):
+                        args = {}
+
+                except Exception:
+
+                    args = {}
+
+                result = _execute_tool(
                     name,
                     args,
                     user,
                 )
 
-
                 tools_used.append(
                     name,
                 )
-
 
                 try:
 
@@ -887,7 +932,7 @@ async def procesar_mensaje_usuario(
                                 "ok",
                                 False,
                             )
-                            else "denied"
+                            else "error"
                         ),
                         args,
                         result,
@@ -896,84 +941,70 @@ async def procesar_mensaje_usuario(
                 except Exception:
 
                     log.exception(
-                        "No se pudo registrar "
-                        "auditoría de Fiorella."
+                        "No se pudo auditar "
+                        "la herramienta %s",
+                        name,
                     )
 
-
-                # /*
-                # IMPORTANTE:
-                # Para generateContent conservamos la respuesta
-                # completa del modelo anterior, incluida la firma
-                # de pensamiento que gestiona el SDK.
-                # */
-
-                function_parts.append(
-                    types.Part.from_function_response(
-                        name=name,
-                        response=result,
-                    )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": json.dumps(
+                            result,
+                            ensure_ascii=False,
+                            default=str,
+                        ),
+                    }
                 )
 
+            # =================================================
+            # RESPUESTA FINAL DESPUÉS DE HERRAMIENTAS
+            # =================================================
 
-            first_candidate = (
-                first_response.candidates[0]
-                if first_response.candidates
-                else None
+            final_response = (
+                await _generate(
+                    messages,
+                    use_tools=False,
+                )
             )
 
-
-            if (
-                first_candidate is None
-                or first_candidate.content is None
-            ):
+            if not final_response.choices:
 
                 raise RuntimeError(
-                    "Gemini solicitó una herramienta "
-                    "pero no devolvió contenido válido."
+                    "OpenRouter no devolvió "
+                    "respuesta después de tools."
                 )
 
-
-            second_contents = [
-                *contents,
-                first_candidate.content,
-
-                types.Content(
-                    role="user",
-                    parts=function_parts,
-                ),
-            ]
-
-
-            second_response, model_used = (
-                await _generate(
-                    contents=second_contents,
-                    config=types.GenerateContentConfig(
-                        system_instruction=(
-                            SYSTEM_PROMPT
-                        ),
-                        temperature=0.15,
-                        response_mime_type=(
-                            "application/json"
-                        ),
-                    ),
-                )
+            final_message = (
+                final_response
+                .choices[0]
+                .message
             )
 
-
             raw = (
-                second_response.text
+                final_message.content
                 or ""
             )
 
+            actual_model = getattr(
+                final_response,
+                "model",
+                MODEL,
+            )
 
         else:
 
             raw = (
-                first_response.text
+                assistant_message.content
                 or ""
             )
 
+            actual_model = getattr(
+                response,
+                "model",
+                MODEL,
+            )
 
         # ====================================================
         # PARSEAR
@@ -983,7 +1014,6 @@ async def procesar_mensaje_usuario(
             raw,
         )
 
-
         result = {
             "respuesta": str(
                 parsed.get(
@@ -991,43 +1021,37 @@ async def procesar_mensaje_usuario(
                     "Entendido.",
                 )
             ),
-
             "animacion": str(
                 parsed.get(
                     "animacion",
                     "point",
                 )
             ),
-
             "action": parsed.get(
                 "action",
             ),
-
             "conversation_id": (
                 conversation_id
             ),
-
             "tools_used": (
                 tools_used
             ),
-
+            "provider": "openrouter",
+            "requested_model": MODEL,
             "model_used": (
-                model_used
+                actual_model
             ),
         }
 
-
         # ====================================================
-        # MEMORIA RESPUESTA
+        # GUARDAR RESPUESTA EN MEMORIA
         # ====================================================
 
         save_message(
             conversation_id,
             uid,
             "assistant",
-            result[
-                "respuesta"
-            ],
+            result["respuesta"],
             (
                 tools_used[0]
                 if tools_used
@@ -1036,6 +1060,9 @@ async def procesar_mensaje_usuario(
             result,
         )
 
+        # ====================================================
+        # AUDITORÍA
+        # ====================================================
 
         try:
 
@@ -1049,7 +1076,8 @@ async def procesar_mensaje_usuario(
                     "module": active_module,
                 },
                 {
-                    "model": model_used,
+                    "provider": "openrouter",
+                    "model": actual_model,
                     "tools": tools_used,
                 },
             )
@@ -1057,24 +1085,18 @@ async def procesar_mensaje_usuario(
         except Exception:
 
             log.exception(
-                "No se pudo registrar auditoría del chat."
+                "No se pudo registrar "
+                "auditoría del chat."
             )
-
 
         return result
 
-
     except Exception as exc:
 
-        # ====================================================
-        # ERROR REAL
-        # ====================================================
-
         log.exception(
-            "Fiorella chat FAILED: %s",
+            "Fiorella OpenRouter FAILED: %s",
             exc,
         )
-
 
         try:
 
@@ -1088,9 +1110,8 @@ async def procesar_mensaje_usuario(
                     "module": active_module,
                 },
                 {
-                    "error": str(
-                        exc,
-                    )
+                    "provider": "openrouter",
+                    "error": str(exc),
                 },
             )
 
@@ -1101,24 +1122,19 @@ async def procesar_mensaje_usuario(
                 "auditoría del error."
             )
 
-
         return {
             "respuesta": (
                 "No pude conectar con el servicio "
                 "de inteligencia artificial en este momento. "
                 "El sistema biométrico continúa operativo."
             ),
-
             "animacion": "alert",
-
             "action": None,
-
             "conversation_id": (
                 conversation_id
             ),
-
             "tools_used": [],
-
+            "provider": "openrouter",
             "error": (
                 str(exc)
                 if os.getenv(
@@ -1131,6 +1147,7 @@ async def procesar_mensaje_usuario(
         }
 
 
+# Compatibilidad con código existente
 procesar_mensaje_usuario_v3 = (
     procesar_mensaje_usuario
 )
