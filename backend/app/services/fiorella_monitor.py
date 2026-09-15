@@ -6,7 +6,7 @@ import os
 import asyncio
 from typing import Any
 
-from app.services.database import fetch_all
+from app.services.database import execute, fetch_all
 from app.services.fiorella_audit import audit
 
 
@@ -23,7 +23,7 @@ def _upsert_incident(
     target: str = "",
 ):
     fingerprint = _fingerprint(category, title, target)
-    fetch_all(
+    execute(
         """
         MERGE dbo.fiorella_incidents AS target
         USING (SELECT ? fingerprint, ? severity, ? category, ? title,

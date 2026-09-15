@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from app.core.permissions import has_permission
-from app.services.database import fetch_all, test_connection
+from app.services.database import execute, fetch_all, test_connection
 from app.services.fiorella_audit import audit
 
 
@@ -174,7 +174,7 @@ def tool_navigation(user: dict[str, Any], module: str):
 
 def create_pending_action(user: dict[str, Any], tool_name: str, args: dict[str, Any], preview_data: dict[str, Any]):
     action_id = str(uuid.uuid4())
-    fetch_all(
+    execute(
         """
         INSERT INTO dbo.fiorella_pending_actions
         (id,user_id,tool_name,arguments_json,preview_json,status,expires_at)
@@ -308,13 +308,18 @@ def confirm_action(user: dict[str, Any], action_id: str):
         result = {"ok": False, "error": "Acción no soportada."}
 
     status = "completed" if result.get("ok") else "failed"
-    fetch_all(
-        """
-        UPDATE dbo.fiorella_pending_actions
-        SET status=?,confirmed_at=SYSUTCDATETIME()
-        WHERE id=CAST(? AS uniqueidentifier)
-        """,
-        (status, action_id),
-    )
+    execute(
+    """
+    UPDATE dbo.fiorella_pending_actions
+    SET
+        status = ?,
+        confirmed_at = SYSUTCDATETIME()
+    WHERE id = CAST(? AS uniqueidentifier)
+    """,
+    (
+        status,
+        action_id,
+    ),
+)
     audit(user, "action_execute", row["tool_name"], status, args, result)
     return result
