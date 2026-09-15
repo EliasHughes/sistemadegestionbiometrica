@@ -1,3 +1,5 @@
+// frontend/src/components/fiorella/FiorellaController.tsx
+
 import {
   useEffect,
   useMemo,
@@ -20,8 +22,13 @@ import type {
 
 import {
   api,
+  getToken,
 } from "../../lib/api";
 
+
+// ============================================================
+// FRASES SEGÚN MÓDULO
+// ============================================================
 
 const TALK: Record<string, string[]> = {
   "/login": [
@@ -40,26 +47,131 @@ const TALK: Record<string, string[]> = {
     "Sin salida = turno abierto.",
   ],
 
+  "/db-records": [
+    "Aquí puedes revisar el historial SQL.",
+    "Puedo ayudarte a interpretar los registros.",
+  ],
+
+  "/remote-punch": [
+    "Aquí podemos trabajar con ponches remotos.",
+    "Verifico el colaborador antes de registrar.",
+  ],
+
   "/devices": [
     "Ping verde = respiro.",
-    "Sin IP no hay SDK.",
+    "Sin IP no hay comunicación con el reloj.",
+  ],
+
+  "/employees": [
+    "Puedo ayudarte a localizar empleados.",
+    "Busquemos por nombre o código.",
   ],
 
   "/collaborators": [
     "Ficha primero, reloj después.",
-    "Dry-run antes de copiar huellas.",
+    "Puedo ayudarte con los colaboradores.",
+  ],
+
+  "/schedules": [
+    "Aquí revisamos horarios y turnos.",
+    "Puedo ayudarte con los horarios.",
+  ],
+
+  "/biometric": [
+    "Puedo revisar el inventario biométrico.",
+    "Veamos el estado de los relojes.",
+  ],
+
+  "/bulk": [
+    "Las operaciones masivas requieren cuidado.",
+    "Primero validamos y luego ejecutamos.",
+  ],
+
+  "/reports": [
+    "Puedo ayudarte a interpretar los reportes.",
+    "Veamos qué información necesitas.",
   ],
 
   "/export": [
-    "Excel para analizar, PDF para firmar.",
+    "Excel para analizar, PDF para presentar.",
+  ],
+
+  "/sync-history": [
+    "Aquí podemos revisar las sincronizaciones.",
+    "Puedo buscar errores de sincronización.",
+  ],
+
+  "/users": [
+    "La administración de usuarios requiere permisos.",
+    "Puedo orientarte sobre roles y usuarios.",
+  ],
+
+  "/settings": [
+    "Aquí configuramos el sistema.",
+    "Puedo ayudarte con los parámetros.",
+  ],
+
+  "/advanced-reports": [
+    "Puedo ayudarte a analizar los reportes avanzados.",
   ],
 
   default: [
-    "Camino un rato y descanso.",
-    "Clic y salto. La x me esconde.",
+    "Estoy disponible si necesitas ayuda.",
+    "Puedes preguntarme sobre el sistema.",
   ],
 };
 
+
+// ============================================================
+// TIPOS
+// ============================================================
+
+type FiorellaControllerProps = {
+  events?: FiorellaEvents;
+};
+
+
+type StoredUser = {
+  id?: string | number;
+  usuario_id?: string | number;
+
+  username?: string;
+
+  nombre?: string;
+  name?: string;
+
+  role?: string;
+};
+
+
+type FiorellaChatResponse = {
+  respuesta?: string;
+
+  animacion?: FiorellaAction;
+
+  conversation_id?: number | null;
+
+  tools_used?: string[];
+
+  model_used?: string;
+
+  error?: string | null;
+
+  requires_confirmation?: boolean;
+
+  action_id?: string | null;
+
+  action?: {
+    type?: string;
+    route?: string;
+    [key: string]: unknown;
+  } | null;
+};
+
+
+// ============================================================
+// HELPERS
+// ============================================================
 
 function currentModule(): string {
   return window.location.pathname || "/dashboard";
@@ -76,11 +188,16 @@ function talkKey(): string {
 
 
 function pick(
-  arr: string[],
+  values: string[],
 ): string {
-  return arr[
+
+  if (!values.length) {
+    return "";
+  }
+
+  return values[
     Math.floor(
-      Math.random() * arr.length,
+      Math.random() * values.length,
     )
   ];
 }
@@ -95,76 +212,80 @@ const WANDER_POOL: FiorellaAction[] = [
 ];
 
 
-type FiorellaControllerProps = {
-  events?: FiorellaEvents;
-};
-
-
-type StoredUser = {
-  id?: string | number;
-  usuario_id?: string | number;
-  username?: string;
-  nombre?: string;
-  name?: string;
-};
-
-
-type FiorellaChatResponse = {
-  respuesta?: string;
-  animacion?: FiorellaAction;
-
-  conversation_id?: number;
-
-  accion?: string | null;
-  ruta?: string | null;
-
-  requires_confirmation?: boolean;
-  action_id?: string | null;
-
-  tools_used?: string[];
-
-  [key: string]: unknown;
-};
-
+// ============================================================
+// COMPONENTE
+// ============================================================
 
 export default function FiorellaController({
   events = {},
 }: FiorellaControllerProps) {
 
-  const [hidden, setHidden] = useState(
+  const [
+    hidden,
+    setHidden,
+  ] = useState<boolean>(
     () =>
       localStorage.getItem(
         "hide-fiorella",
       ) === "1",
   );
 
-  const [action, setAction] =
-    useState<FiorellaAction>("idle");
 
-  const [x, setX] = useState(48);
+  const [
+    action,
+    setAction,
+  ] = useState<FiorellaAction>(
+    "idle",
+  );
 
-  const [facing, setFacing] =
-    useState<1 | -1>(1);
 
-  const [line, setLine] =
-    useState(
-      "¡Hola! Soy Fiorella.",
-    );
+  const [
+    x,
+    setX,
+  ] = useState<number>(
+    48,
+  );
+
+
+  const [
+    facing,
+    setFacing,
+  ] = useState<1 | -1>(
+    1,
+  );
+
+
+  const [
+    line,
+    setLine,
+  ] = useState<string>(
+    "¡Hola! Soy Fiorella.",
+  );
+
 
   const [
     isChatOpen,
     setIsChatOpen,
-  ] = useState(false);
+  ] = useState<boolean>(
+    false,
+  );
+
 
   const [
     loading,
     setLoading,
-  ] = useState(false);
+  ] = useState<boolean>(
+    false,
+  );
+
 
   const [
     messages,
     setMessages,
-  ] = useState<ChatMessage[]>([]);
+  ] = useState<ChatMessage[]>(
+    [],
+  );
+
 
   const [
     currentUser,
@@ -172,26 +293,31 @@ export default function FiorellaController({
   ] = useState<{
     id: string;
     name: string;
-  } | null>(null);
+  } | null>(
+    null,
+  );
 
-  /*
-   * conversationId es la memoria lógica del chat.
-   *
-   * El backend devuelve este ID y debemos enviarlo de nuevo
-   * en cada mensaje siguiente.
-   */
+
+  // ==========================================================
+  // ID DE CONVERSACIÓN
+  // ==========================================================
+
   const [
     conversationId,
     setConversationId,
-  ] = useState<number | null>(null);
+  ] = useState<number | null>(
+    null,
+  );
 
 
   const engine = useRef(
     new FiorellaBehaviorEngine(),
   );
 
-  const tabHidden =
-    useRef(false);
+
+  const tabHidden = useRef<boolean>(
+    false,
+  );
 
 
   const reducedMotion = useMemo(
@@ -203,15 +329,16 @@ export default function FiorellaController({
   );
 
 
-  // ============================================================
-  // CARGAR USUARIO Y MEMORIA LOCAL
-  // ============================================================
+  // ==========================================================
+  // CARGAR USUARIO / SESIÓN
+  // ==========================================================
 
   useEffect(() => {
 
     const rawUser =
       localStorage.getItem("user")
       || localStorage.getItem("auth_user");
+
 
     let activeUser: {
       id: string;
@@ -223,11 +350,17 @@ export default function FiorellaController({
 
 
     if (rawUser) {
+
       try {
+
         const parsed =
-          JSON.parse(rawUser) as StoredUser;
+          JSON.parse(
+            rawUser,
+          ) as StoredUser;
+
 
         activeUser = {
+
           id: String(
             parsed.id
             ?? parsed.usuario_id
@@ -243,41 +376,61 @@ export default function FiorellaController({
           ),
         };
 
-      } catch {
+      } catch (error) {
+
         console.warn(
-          "Fiorella: datos de usuario inválidos en localStorage.",
+          "Fiorella: no se pudo leer el usuario almacenado.",
+          error,
         );
       }
     }
 
 
-    setCurrentUser(activeUser);
+    setCurrentUser(
+      activeUser,
+    );
 
 
-    // ----------------------------------------------------------
-    // Historial visual local
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
+    // HISTORIAL VISUAL LOCAL
+    // --------------------------------------------------------
 
     const sessionKey =
       `fiorella_session_${activeUser.id}`;
 
+
     const localHistory =
-      localStorage.getItem(sessionKey);
+      localStorage.getItem(
+        sessionKey,
+      );
+
 
     let parsedMessages:
       ChatMessage[] = [];
 
 
     if (localHistory) {
-      try {
-        const parsed =
-          JSON.parse(localHistory);
 
-        if (Array.isArray(parsed)) {
-          parsedMessages = parsed;
+      try {
+
+        const parsed =
+          JSON.parse(
+            localHistory,
+          );
+
+
+        if (
+          Array.isArray(
+            parsed,
+          )
+        ) {
+
+          parsedMessages =
+            parsed;
         }
 
       } catch {
+
         parsedMessages = [];
       }
     }
@@ -286,45 +439,55 @@ export default function FiorellaController({
     if (
       parsedMessages.length > 0
     ) {
+
       setMessages(
         parsedMessages,
       );
 
     } else {
+
       setMessages([
         {
           id: "init",
           sender: "fiorella",
           text:
             `¡Hola ${activeUser.name}! `
-            + "Estoy lista para ayudarte en "
-            + `el módulo ${currentModule()}. `
-            + "¿Qué deseas realizar?",
+            + "Estoy lista para ayudarte. "
+            + `Estás en ${currentModule()}.`,
         },
       ]);
     }
 
 
-    // ----------------------------------------------------------
-    // Recuperar conversation_id del backend
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
+    // RECUPERAR CONVERSACIÓN
+    // --------------------------------------------------------
 
     const conversationKey =
       `fiorella_conversation_${activeUser.id}`;
+
 
     const storedConversation =
       localStorage.getItem(
         conversationKey,
       );
 
+
     if (storedConversation) {
+
       const parsedId =
-        Number(storedConversation);
+        Number(
+          storedConversation,
+        );
+
 
       if (
-        Number.isInteger(parsedId)
+        Number.isInteger(
+          parsedId,
+        )
         && parsedId > 0
       ) {
+
         setConversationId(
           parsedId,
         );
@@ -334,23 +497,28 @@ export default function FiorellaController({
   }, []);
 
 
-  // ============================================================
-  // GUARDAR HISTORIAL VISUAL LOCAL
-  // ============================================================
+  // ==========================================================
+  // GUARDAR MENSAJES LOCALMENTE
+  // ==========================================================
 
   useEffect(() => {
 
     if (
-      currentUser
-      && messages.length > 0
+      !currentUser
+      || messages.length === 0
     ) {
-      localStorage.setItem(
-        `fiorella_session_${currentUser.id}`,
-        JSON.stringify(
-          messages.slice(-30),
-        ),
-      );
+      return;
     }
+
+
+    localStorage.setItem(
+      `fiorella_session_${currentUser.id}`,
+      JSON.stringify(
+        messages.slice(
+          -30,
+        ),
+      ),
+    );
 
   }, [
     messages,
@@ -358,23 +526,40 @@ export default function FiorellaController({
   ]);
 
 
-  // ============================================================
-  // GUARDAR ID DE CONVERSACIÓN
-  // ============================================================
+  // ==========================================================
+  // GUARDAR conversation_id
+  // ==========================================================
 
   useEffect(() => {
 
     if (
       !currentUser
-      || !conversationId
     ) {
       return;
     }
 
-    localStorage.setItem(
-      `fiorella_conversation_${currentUser.id}`,
-      String(conversationId),
-    );
+
+    const key =
+      `fiorella_conversation_${currentUser.id}`;
+
+
+    if (
+      conversationId
+    ) {
+
+      localStorage.setItem(
+        key,
+        String(
+          conversationId,
+        ),
+      );
+
+    } else {
+
+      localStorage.removeItem(
+        key,
+      );
+    }
 
   }, [
     conversationId,
@@ -382,9 +567,9 @@ export default function FiorellaController({
   ]);
 
 
-  // ============================================================
+  // ==========================================================
   // FRASES CONTEXTUALES
-  // ============================================================
+  // ==========================================================
 
   useEffect(() => {
 
@@ -397,9 +582,12 @@ export default function FiorellaController({
 
 
     const talk = () => {
+
       setLine(
         pick(
-          TALK[talkKey()]
+          TALK[
+            talkKey()
+          ]
           || TALK.default,
         ),
       );
@@ -408,6 +596,7 @@ export default function FiorellaController({
 
     talk();
 
+
     const timer =
       window.setInterval(
         talk,
@@ -415,10 +604,12 @@ export default function FiorellaController({
       );
 
 
-    return () =>
+    return () => {
+
       window.clearInterval(
         timer,
       );
+    };
 
   }, [
     hidden,
@@ -426,16 +617,18 @@ export default function FiorellaController({
   ]);
 
 
-  // ============================================================
+  // ==========================================================
   // VISIBILIDAD DE PESTAÑA
-  // ============================================================
+  // ==========================================================
 
   useEffect(() => {
 
-    const onVisibility = () => {
-      tabHidden.current =
-        document.hidden;
-    };
+    const onVisibility =
+      () => {
+
+        tabHidden.current =
+          document.hidden;
+      };
 
 
     document.addEventListener(
@@ -444,18 +637,20 @@ export default function FiorellaController({
     );
 
 
-    return () =>
+    return () => {
+
       document.removeEventListener(
         "visibilitychange",
         onVisibility,
       );
+    };
 
   }, []);
 
 
-  // ============================================================
-  // COMPORTAMIENTO / ANIMACIÓN
-  // ============================================================
+  // ==========================================================
+  // COMPORTAMIENTO DE FIORELLA
+  // ==========================================================
 
   useEffect(() => {
 
@@ -467,8 +662,12 @@ export default function FiorellaController({
     }
 
 
-    let cancelled = false;
-    let timer = 0;
+    let cancelled =
+      false;
+
+
+    let timer =
+      0;
 
 
     const maxX = () =>
@@ -479,18 +678,22 @@ export default function FiorellaController({
 
 
     const wander =
-      (): FiorellaAction =>
-        WANDER_POOL[
+      (): FiorellaAction => {
+
+        return WANDER_POOL[
           Math.floor(
             Math.random()
             * WANDER_POOL.length,
           )
         ];
+      };
 
 
     const tick = () => {
 
-      if (cancelled) {
+      if (
+        cancelled
+      ) {
         return;
       }
 
@@ -498,32 +701,42 @@ export default function FiorellaController({
       if (
         !tabHidden.current
       ) {
+
         const next =
           engine.current.decide(
             events,
             wander,
           );
 
-        setAction(next);
+
+        setAction(
+          next,
+        );
 
 
         if (
           next === "walk"
           && !reducedMotion
         ) {
+
           setX(
-            (prevX) => {
+            (
+              previousX,
+            ) => {
 
               const target =
                 20
                 + Math.random()
                 * maxX();
 
+
               setFacing(
-                target >= prevX
-                  ? 1
-                  : -1,
+                target
+                >= previousX
+                ? 1
+                : -1,
               );
+
 
               return target;
             },
@@ -556,7 +769,10 @@ export default function FiorellaController({
 
 
     return () => {
-      cancelled = true;
+
+      cancelled =
+        true;
+
 
       window.clearTimeout(
         timer,
@@ -571,30 +787,84 @@ export default function FiorellaController({
   ]);
 
 
-  // ============================================================
+  // ==========================================================
   // ABRIR / CERRAR CHAT
-  // ============================================================
+  // ==========================================================
 
-  const toggleChat = () => {
+  const toggleChat =
+    () => {
 
-    const nextState =
-      !isChatOpen;
-
-    setIsChatOpen(
-      nextState,
-    );
-
-    setAction(
-      nextState
-        ? "point"
-        : "idle",
-    );
-  };
+      const next =
+        !isChatOpen;
 
 
-  // ============================================================
-  // ENVIAR MENSAJE A FASTAPI / GEMINI
-  // ============================================================
+      setIsChatOpen(
+        next,
+      );
+
+
+      setAction(
+        next
+          ? "point"
+          : "idle",
+      );
+    };
+
+
+  // ==========================================================
+  // PROCESAR ACCIONES DEL BACKEND
+  // ==========================================================
+
+  const processBackendAction =
+    (
+      data:
+        FiorellaChatResponse,
+    ) => {
+
+      const backendAction =
+        data.action;
+
+
+      if (
+        !backendAction
+      ) {
+        return;
+      }
+
+
+      if (
+        backendAction.type === "navigate"
+        && typeof backendAction.route === "string"
+      ) {
+
+        const route =
+          backendAction.route;
+
+
+        if (
+          route.startsWith("/")
+        ) {
+
+          window.history.pushState(
+            {},
+            "",
+            route,
+          );
+
+
+          window.dispatchEvent(
+            new PopStateEvent(
+              "popstate",
+            ),
+          );
+        }
+      }
+    };
+
+
+  // ==========================================================
+  // ENVIAR MENSAJE
+  // ==========================================================
 
   const handleSendMessage =
     async (
@@ -613,70 +883,132 @@ export default function FiorellaController({
       }
 
 
-      const userMsg:
+      // ------------------------------------------------------
+      // VERIFICAR TOKEN
+      // ------------------------------------------------------
+
+      const token =
+        getToken();
+
+
+      if (
+        !token
+      ) {
+
+        setMessages(
+          (
+            previous,
+          ) => [
+            ...previous,
+            {
+              id:
+                `${Date.now()}-auth-error`,
+              sender:
+                "fiorella",
+              text:
+                "Tu sesión no está disponible. Inicia sesión nuevamente.",
+            },
+          ],
+        );
+
+
+        setAction(
+          "alert",
+        );
+
+
+        return;
+      }
+
+
+      // ------------------------------------------------------
+      // AGREGAR MENSAJE DE USUARIO
+      // ------------------------------------------------------
+
+      const userMessage:
         ChatMessage = {
-          id: `${Date.now()}-user`,
-          sender: "user",
-          text: trimmed,
+
+          id:
+            `${Date.now()}-user`,
+
+          sender:
+            "user",
+
+          text:
+            trimmed,
         };
 
 
       setMessages(
-        (prev) => [
-          ...prev,
-          userMsg,
+        (
+          previous,
+        ) => [
+          ...previous,
+          userMessage,
         ],
       );
 
 
-      setLoading(true);
-      setAction("walk");
+      setLoading(
+        true,
+      );
+
+
+      setAction(
+        "think",
+      );
 
 
       try {
 
-        /*
-         * Endpoint REAL:
-         *
-         * main.py:
-         *   prefix="/api/v1"
-         *
-         * fiorella.py:
-         *   @router.post("/chat")
-         *
-         * Resultado:
-         *   POST /api/v1/chat
-         *
-         * api() agrega automáticamente:
-         * Authorization: Bearer <access_token>
-         */
+        // ====================================================
+        // ENDPOINT CORRECTO
+        //
+        // main.py:
+        //   prefix="/api/v1"
+        //
+        // fiorella.py:
+        //   @router.post("/chat")
+        //
+        // URL FINAL:
+        //   /api/v1/chat
+        // ====================================================
+
         const data =
           await api<FiorellaChatResponse>(
             "/api/v1/chat",
             {
-              method: "POST",
+              method:
+                "POST",
 
-              body: JSON.stringify({
-                message:
-                  trimmed,
+              body:
+                JSON.stringify({
+                  message:
+                    trimmed,
 
-                active_module:
-                  currentModule(),
+                  active_module:
+                    currentModule(),
 
-                conversation_id:
-                  conversationId,
-              }),
+                  conversation_id:
+                    conversationId,
+                }),
             },
           );
 
 
-        // ------------------------------------------------------
-        // MEMORIA
-        // ------------------------------------------------------
+        // ----------------------------------------------------
+        // GUARDAR conversation_id
+        // ----------------------------------------------------
 
         if (
           data.conversation_id
+          && Number.isFinite(
+            Number(
+              data.conversation_id,
+            ),
+          )
         ) {
+
           setConversationId(
             Number(
               data.conversation_id,
@@ -685,128 +1017,170 @@ export default function FiorellaController({
         }
 
 
-        // ------------------------------------------------------
-        // RESPUESTA VISUAL
-        // ------------------------------------------------------
+        // ----------------------------------------------------
+        // RESPUESTA
+        // ----------------------------------------------------
 
         const responseText =
           typeof data.respuesta
             === "string"
           && data.respuesta.trim()
             ? data.respuesta
-            : "Solicitud procesada con éxito.";
+            : "Fiorella respondió sin contenido.";
 
 
-        const aiMsg:
+        const aiMessage:
           ChatMessage = {
-            id:
-              `${Date.now()}-fiorella`,
 
-            sender:
-              "fiorella",
+          id:
+            `${Date.now()}-fiorella`,
 
-            text:
-              responseText,
-          };
+          sender:
+            "fiorella",
+
+          text:
+            responseText,
+        };
 
 
         setMessages(
-          (prev) => [
-            ...prev,
-            aiMsg,
+          (
+            previous,
+          ) => [
+            ...previous,
+            aiMessage,
           ],
         );
 
 
-        // ------------------------------------------------------
+        // ----------------------------------------------------
         // ANIMACIÓN
-        // ------------------------------------------------------
+        // ----------------------------------------------------
 
         if (
           data.animacion
         ) {
+
           setAction(
             data.animacion,
           );
 
         } else {
+
           setAction(
             "point",
           );
         }
 
 
-        // ------------------------------------------------------
-        // DEBUG DE HERRAMIENTAS
-        // ------------------------------------------------------
+        // ----------------------------------------------------
+        // DEBUG ÚTIL
+        // ----------------------------------------------------
 
-        if (
-          Array.isArray(
-            data.tools_used,
-          )
-          && data.tools_used.length
-        ) {
-          console.info(
-            "Fiorella tools:",
-            data.tools_used,
-          );
-        }
+        console.info(
+          "[Fiorella] respuesta:",
+          {
+            conversationId:
+              data.conversation_id,
+
+            model:
+              data.model_used,
+
+            tools:
+              data.tools_used,
+
+            error:
+              data.error,
+
+            action:
+              data.action,
+          },
+        );
 
 
-        // ------------------------------------------------------
-        // ACCIÓN QUE REQUIERE CONFIRMACIÓN
-        // ------------------------------------------------------
+        // ----------------------------------------------------
+        // ACCIONES DEL BACKEND
+        // ----------------------------------------------------
+
+        processBackendAction(
+          data,
+        );
+
+
+        // ----------------------------------------------------
+        // CONFIRMACIÓN
+        // ----------------------------------------------------
 
         if (
           data.requires_confirmation
           && data.action_id
         ) {
+
           console.info(
-            "Fiorella requiere confirmación:",
+            "[Fiorella] acción pendiente:",
             data.action_id,
           );
         }
 
-
-      } catch (err) {
+      } catch (
+        error
+      ) {
 
         console.error(
-          "Fiorella chat error:",
-          err,
+          "[Fiorella] chat error:",
+          error,
         );
 
 
-        let errorMessage =
-          "Ocurrió una desconexión momentánea con el servidor de IA.";
+        let message =
+          "No pude comunicarme con el servidor de Fiorella.";
 
 
         if (
-          err instanceof Error
+          error instanceof Error
         ) {
 
+          message =
+            error.message;
+
+
           if (
-            err.message.includes(
-              "401",
-            )
-            || err.message
+            message
               .toLowerCase()
               .includes(
-                "credenciales",
+                "401",
+              )
+            || message
+              .toLowerCase()
+              .includes(
+                "credencial",
               )
           ) {
-            errorMessage =
-              "Tu sesión expiró. Inicia sesión nuevamente.";
 
-          } else {
-            errorMessage =
-              `No pude completar la solicitud: ${err.message}`;
+            message =
+              "Tu sesión expiró. Inicia sesión nuevamente.";
+          }
+
+
+          if (
+            message
+              .toLowerCase()
+              .includes(
+                "gemini",
+              )
+          ) {
+
+            message =
+              `El backend respondió, pero Gemini no está disponible: ${message}`;
           }
         }
 
 
         setMessages(
-          (prev) => [
-            ...prev,
+          (
+            previous,
+          ) => [
+            ...previous,
 
             {
               id:
@@ -816,7 +1190,7 @@ export default function FiorellaController({
                 "fiorella",
 
               text:
-                errorMessage,
+                message,
             },
           ],
         );
@@ -835,11 +1209,14 @@ export default function FiorellaController({
     };
 
 
-  // ============================================================
+  // ==========================================================
   // FIORELLA OCULTA
-  // ============================================================
+  // ==========================================================
 
-  if (hidden) {
+  if (
+    hidden
+  ) {
+
     return (
       <button
         type="button"
@@ -861,11 +1238,15 @@ export default function FiorellaController({
         "
 
         onClick={() => {
+
           localStorage.removeItem(
             "hide-fiorella",
           );
 
-          setHidden(false);
+
+          setHidden(
+            false,
+          );
         }}
       >
         💬 Fiorella
@@ -874,15 +1255,20 @@ export default function FiorellaController({
   }
 
 
-  // ============================================================
-  // RENDER PRINCIPAL
-  // ============================================================
+  // ==========================================================
+  // RENDER
+  // ==========================================================
 
   return (
     <Fiorella
-      action={action}
 
-      x={x}
+      action={
+        action
+      }
+
+      x={
+        x
+      }
 
       facing={
         facing === -1
@@ -890,7 +1276,9 @@ export default function FiorellaController({
           : "right"
       }
 
-      line={line}
+      line={
+        line
+      }
 
       reducedMotion={
         reducedMotion
@@ -906,6 +1294,7 @@ export default function FiorellaController({
           "hide-fiorella",
           "1",
         );
+
 
         setHidden(
           true,
@@ -933,13 +1322,27 @@ export default function FiorellaController({
       }
 
       onCloseChat={() => {
-        setIsChatOpen(false);
-        setAction("idle");
+
+        setIsChatOpen(
+          false,
+        );
+
+
+        setAction(
+          "idle",
+        );
       }}
 
       onMinimizeChat={() => {
-        setIsChatOpen(false);
-        setAction("idle");
+
+        setIsChatOpen(
+          false,
+        );
+
+
+        setAction(
+          "idle",
+        );
       }}
     />
   );
