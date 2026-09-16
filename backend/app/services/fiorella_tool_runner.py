@@ -78,6 +78,7 @@ async def run_native_tool_calls(
 ) -> tuple[
     str,
     Any,
+    dict[str, Any] | None,
 ]:
 
     tool_calls = (
@@ -97,6 +98,8 @@ async def run_native_tool_calls(
     tool_results: list[
         dict[str, Any]
     ] = []
+
+    backend_action: dict[str, Any] | None = None
 
 
     for call in tool_calls:
@@ -142,6 +145,12 @@ async def run_native_tool_calls(
             args,
             user,
         )
+
+        if (
+         isinstance(result, dict)
+         and isinstance(result.get("action"), dict)
+            ):
+            backend_action = result["action"]
 
 
         tools_used.append(
@@ -211,6 +220,7 @@ async def run_native_tool_calls(
         return (
             fallback,
             final_response,
+            backend_action,
         )
 
 
@@ -243,10 +253,7 @@ async def run_native_tool_calls(
         )
 
 
-    return (
-        raw,
-        final_response,
-    )
+    return raw, final_response, backend_action
 
 
 # ============================================================
@@ -268,6 +275,7 @@ async def run_text_tool_calls(
 ) -> tuple[
     str,
     Any,
+    dict[str, Any] | None,
 ]:
 
     text_calls = (
@@ -288,6 +296,8 @@ async def run_text_tool_calls(
     tool_results: list[
         dict[str, Any]
     ] = []
+
+    backend_action: dict[str, Any] | None = None
 
 
     for call in text_calls:
@@ -312,6 +322,12 @@ async def run_text_tool_calls(
             args,
             user,
         )
+
+        if (
+            isinstance(result, dict)
+            and isinstance(result.get("action"), dict)
+        ):
+            backend_action = result["action"]
 
 
         tools_used.append(
@@ -384,6 +400,7 @@ async def run_text_tool_calls(
                 tool_results
             ),
             final_response,
+            backend_action,
         )
 
 
@@ -414,4 +431,5 @@ async def run_text_tool_calls(
     return (
         raw,
         final_response,
+        backend_action,
     )

@@ -196,17 +196,18 @@ async def procesar_mensaje_usuario(
             assistant_content,
             len(native_calls),
         )
-
+        
+        tool_action = None
         if native_calls:
-            raw, final_response = (
-                    await run_native_tool_calls(
-                        assistant_message=assistant_message,
-                        messages=messages,
-                        user=user,
-                        tools_used=tools_used,
-                        user_message=message,
-                    )
-                )
+            raw, final_response, tool_action = (
+                await run_native_tool_calls(
+                assistant_message=assistant_message,
+                messages=messages,
+                user=user,
+                tools_used=tools_used,
+                user_message=message,
+            )
+        )
 
             used_model = actual_model(
                 final_response,
@@ -218,7 +219,7 @@ async def procesar_mensaje_usuario(
             )
 
             if text_calls:
-                raw, final_response = (
+                raw, final_response, tool_action = (
                     await run_text_tool_calls(
                         assistant_content=assistant_content,
                         messages=messages,
@@ -255,8 +256,11 @@ async def procesar_mensaje_usuario(
                     "point",
                 )
             ),
-            "action": parsed.get(
-                "action",
+            "action": (
+                tool_action
+                or parsed.get(
+                    "action",
+                )
             ),
             "conversation_id": conversation_id,
             "tools_used": tools_used,

@@ -63,17 +63,41 @@ def export_punches_excel(
     limit: int = 5000,
 ) -> dict[str, Any]:
 
+        # ========================================================
+    # NORMALIZAR ARGUMENTOS RECIBIDOS DESDE EL MODELO
+    # ========================================================
+
+    normalized_query = (
+        str(query).strip()
+        if query is not None
+        else None
+    )
+
+    normalized_device = (
+        str(dispositivo).strip()
+        if dispositivo is not None
+        else None
+    )
+
+    normalized_limit = min(
+        max(
+            int(limit or 5000),
+            1,
+        ),
+        5000,
+    )
+
     # --------------------------------------------------------
     # Obtener datos usando la tool existente
     # --------------------------------------------------------
 
     result = tool_search_punches(
         user,
-        query=query,
+        query=normalized_query,
         fecha_desde=fecha_desde,
         fecha_hasta=fecha_hasta,
-        dispositivo=dispositivo,
-        limit=limit,
+        dispositivo=normalized_device,
+        limit=normalized_limit,
     )
 
     if not result.get(

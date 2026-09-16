@@ -81,38 +81,100 @@ def tool_search_punches(
     limit: int = 100,
 ):
     if not allowed(user, "attendance.read"):
-        return {"ok": False, "error": "Sin permiso."}
+        return {
+            "ok": False,
+            "error": "Sin permiso.",
+        }
 
-    limit = max(1, min(int(limit), 500))
+    limit = max(
+        1,
+        min(
+            int(limit),
+            500,
+        ),
+    )
+
     conditions = []
     params: list[Any] = [limit]
 
     if fecha_desde:
-        conditions.append("fecha >= CAST(? AS date)")
-        params.append(fecha_desde)
-    if fecha_hasta:
-        conditions.append("fecha < DATEADD(day,1,CAST(? AS date))")
-        params.append(fecha_hasta)
-    if dispositivo and dispositivo.lower() != "todos":
-        conditions.append("LTRIM(RTRIM(dispositivo_origen))=?")
-        params.append(dispositivo.strip())
-    if query:
-        conditions.append("(codigo LIKE ? OR ISNULL(nombre,'') LIKE ?)")
-        like = f"%{query.strip()}%"
-        params.extend([like, like])
+        conditions.append(
+            "fecha >= CAST(? AS date)"
+        )
+        params.append(
+            fecha_desde
+        )
 
-    where = " WHERE " + " AND ".join(conditions) if conditions else ""
+    if fecha_hasta:
+        conditions.append(
+            "fecha < DATEADD(day,1,CAST(? AS date))"
+        )
+        params.append(
+            fecha_hasta
+        )
+
+    if (
+        dispositivo
+        and str(dispositivo).lower() != "todos"
+    ):
+        conditions.append(
+            "(LTRIM(RTRIM(dispositivo_origen))=?)"
+        )
+
+        params.append(
+            str(dispositivo).strip()
+        )
+
+    q = (
+        str(query).strip()
+        if query is not None
+        else ""
+    )
+
+    if q:
+        conditions.append(
+            "(codigo LIKE ? OR ISNULL(nombre,'') LIKE ?)"
+        )
+
+        like = f"%{q}%"
+
+        params.extend(
+            [
+                like,
+                like,
+            ]
+        )
+
+    where = (
+        " WHERE " + " AND ".join(conditions)
+        if conditions
+        else ""
+    )
+
     rows = fetch_all(
         f"""
-        SELECT TOP (?) id,codigo,nombre,departamento,fecha,entrada,salida,
-               dispositivo_origen,ultima_sincronizacion
+        SELECT TOP (?)
+            id,
+            codigo,
+            nombre,
+            departamento,
+            fecha,
+            entrada,
+            salida,
+            dispositivo_origen,
+            ultima_sincronizacion
         FROM dbo.punches
         {where}
         ORDER BY fecha DESC, entrada DESC
         """,
         tuple(params),
     )
-    return {"ok": True, "count": len(rows), "items": rows}
+
+    return {
+        "ok": True,
+        "count": len(rows),
+        "items": rows,
+    }
 
 
 def tool_device_health(user: dict[str, Any]):
