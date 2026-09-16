@@ -613,6 +613,23 @@ async def _generate(
                 client.chat.completions.create,
                 **kwargs,
             )
+            log.info(
+    "OpenRouter response: "
+    "model=%s choices=%s",
+    getattr(
+        response,
+        "model",
+        "unknown",
+    ),
+    len(
+        getattr(
+            response,
+            "choices",
+            [],
+        )
+        or []
+    ),
+)
 
             log.info(
                 "Fiorella OpenRouter OK "
@@ -861,6 +878,16 @@ async def procesar_mensaje_usuario(
         assistant_message = (
             response.choices[0].message
         )
+
+        log.info(
+    "Fiorella assistant response: "
+    "content=%r tool_calls=%s",
+    assistant_message.content,
+    len(
+        assistant_message.tool_calls
+        or []
+    ),
+)
 
         tool_calls = (
             assistant_message.tool_calls
