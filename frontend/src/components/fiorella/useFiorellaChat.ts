@@ -39,10 +39,12 @@ export type FiorellaChatResponse = {
   action_id?: string | null;
 
   action?: {
-    type?: string;
-    route?: string;
-    [key: string]: unknown;
-  } | null;
+  type?: string;
+  route?: string;
+  url?: string;
+  filename?: string;
+  [key: string]: unknown;
+} | null;
 };
 
 type UseFiorellaChatOptions = {

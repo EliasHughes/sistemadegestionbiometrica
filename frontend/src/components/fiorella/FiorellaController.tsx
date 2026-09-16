@@ -147,6 +147,18 @@ export default function FiorellaController({
       window.history.pushState({}, "", backendAction.route);
       window.dispatchEvent(new PopStateEvent("popstate"));
     }
+    if (
+      backendAction?.type === "download" &&
+      typeof backendAction.url === "string"
+    ) {
+      window.open(
+        backendAction.url,
+        "_blank",
+        "noopener,noreferrer",
+      );
+
+      return;
+    }
   };
 
   const { messages, loading, clearChat, sendMessage } = useFiorellaChat({

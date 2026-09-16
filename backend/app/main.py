@@ -21,6 +21,9 @@ from app.core.errors import (
     RequestIdMiddleware,
     register_exception_handlers,
 )
+from app.api.routes.fiorella_files import (
+    router as fiorella_files_router,
+)
 
 
 logging.basicConfig(
@@ -201,6 +204,10 @@ app.include_router(
 app.include_router(
     settings_router,
     prefix="/api",
+)
+
+app.include_router(
+    fiorella_files_router
 )
 
 

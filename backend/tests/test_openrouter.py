@@ -4,6 +4,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from openai import OpenAI
+from app.services.fiorella_response_utils import (
+    clean_user_text,
+)
 
 
 # ============================================================

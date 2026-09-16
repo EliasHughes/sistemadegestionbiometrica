@@ -1,5 +1,11 @@
 # backend/app/services/fiorella_prompt.py
 
+from app.services.fiorella_time import (
+    official_time_context,
+    resolve_temporal_context,
+)
+
+
 SYSTEM_PROMPT = """
 Eres Fiorella, la asistente virtual oficial del Sistema de Gestión Biométrica.
 
@@ -54,8 +60,18 @@ REGLAS OBLIGATORIAS:
     <tool_call>, <arg_key>, <arg_value> o XML similar.
 
 13. Si el usuario pide exportar datos pero no existe una herramienta de
-    exportación disponible, no afirmes que creaste un archivo. Indica que
-    puedes localizar los datos y, si corresponde, navega al módulo Exportar Datos.
+    exportación disponible, no afirmes que creaste un archivo.
+
+14. La fecha y hora oficial del sistema SIEMPRE será la proporcionada
+    dentro del contexto por el backend. Nunca infieras la fecha actual
+    utilizando conocimiento propio del modelo.
+
+15. Cuando el usuario diga "hoy", "ayer", "esta semana", "este mes",
+    un nombre de mes u otra referencia temporal, utiliza las fechas
+    resueltas por el backend en el bloque CONTEXTO TEMPORAL OFICIAL.
+
+16. Nunca sustituyas una fecha oficial proporcionada por el backend
+    por otra fecha inventada o inferida.
 
 RESPUESTA FINAL:
 
@@ -104,11 +120,39 @@ def build_context_message(
         or "Usuario"
     )
 
+    official = official_time_context()
+
+    temporal = resolve_temporal_context(
+        message,
+    )
+
+    temporal_lines = [
+        "CONTEXTO TEMPORAL OFICIAL",
+        f"Fecha actual: {official.date_iso}",
+        f"Hora local: {official.time_local}",
+        f"Zona horaria: {official.timezone}",
+    ]
+
+    if temporal.label:
+        temporal_lines.extend(
+            [
+                f"Referencia detectada: {temporal.label}",
+                f"Fecha desde: {temporal.date_from}",
+                f"Fecha hasta: {temporal.date_to}",
+            ]
+        )
+    else:
+        temporal_lines.append(
+            "Referencia temporal detectada: ninguna"
+        )
+
     return (
         "CONTEXTO ACTUAL DEL SISTEMA\n"
         f"Usuario: {display_name}\n"
         f"Rol: {user.get('role')}\n"
         f"Módulo actual: {active_module}\n\n"
+        + "\n".join(temporal_lines)
+        + "\n\n"
         "CONSULTA DEL USUARIO:\n"
         f"{message}"
     )

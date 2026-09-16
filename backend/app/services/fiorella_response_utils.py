@@ -1,4 +1,3 @@
-# backend/app/services/fiorella_response_utils.py
 from __future__ import annotations
 
 import json
@@ -6,183 +5,483 @@ import re
 from typing import Any
 
 
-_MARKDOWN_BOLD = re.compile(r"\*\*(.*?)\*\*", re.DOTALL)
-_MARKDOWN_CODE = re.compile(r"`([^`]+)`")
+_BOLD_RE = re.compile(
+    r"\*\*(.*?)\*\*",
+    re.DOTALL,
+)
+
+_CODE_RE = re.compile(
+    r"`([^`]+)`",
+)
 
 
-def clean_user_text(text: str | None) -> str:
-    value = (text or "").strip()
+def clean_user_text(
+    text: str | None,
+) -> str:
+    """
+    Limpia formato que el chat actual no renderiza correctamente.
+    """
+
+    value = (
+        text
+        or ""
+    ).strip()
 
     if not value:
         return ""
 
-    value = _MARKDOWN_BOLD.sub(r"\1", value)
-    value = _MARKDOWN_CODE.sub(r"\1", value)
+    value = _BOLD_RE.sub(
+        r"\1",
+        value,
+    )
+
+    value = _CODE_RE.sub(
+        r"\1",
+        value,
+    )
 
     return value.strip()
 
 
-def _find_count(result: Any) -> int | None:
-    if not isinstance(result, dict):
+def _extract_count(
+    result: Any,
+) -> int | None:
+    """
+    Intenta localizar el total independientemente de cómo
+    la tool haya estructurado el resultado.
+    """
+
+    if not isinstance(
+        result,
+        dict,
+    ):
         return None
 
-    for key in ("count", "total", "total_registros", "records", "cantidad"):
-        value = result.get(key)
+    possible_keys = (
+        "count",
+        "total",
+        "cantidad",
+        "total_registros",
+        "records",
+    )
 
-        if isinstance(value, bool):
+    for key in possible_keys:
+
+        value = result.get(
+            key
+        )
+
+        if isinstance(
+            value,
+            bool,
+        ):
             continue
 
-        if isinstance(value, int):
+        if isinstance(
+            value,
+            int,
+        ):
             return value
 
-        if isinstance(value, str) and value.isdigit():
-            return int(value)
+        if (
+            isinstance(
+                value,
+                str,
+            )
+            and value.isdigit()
+        ):
+            return int(
+                value
+            )
 
-    for key in ("items", "data", "rows", "resultados"):
-        value = result.get(key)
+    list_keys = (
+        "items",
+        "data",
+        "rows",
+        "resultados",
+        "records_data",
+    )
 
-        if isinstance(value, list):
-            return len(value)
+    for key in list_keys:
+
+        value = result.get(
+            key
+        )
+
+        if isinstance(
+            value,
+            list,
+        ):
+            return len(
+                value
+            )
 
     return None
 
 
-def _result_ok(result: Any) -> bool:
-    if not isinstance(result, dict):
+def _result_ok(
+    result: Any,
+) -> bool:
+
+    if not isinstance(
+        result,
+        dict,
+    ):
         return True
 
-    if "ok" not in result:
-        return not bool(result.get("error"))
+    if "ok" in result:
+        return bool(
+            result.get(
+                "ok"
+            )
+        )
 
-    return bool(result.get("ok"))
+    return not bool(
+        result.get(
+            "error"
+        )
+    )
 
 
 def fallback_from_tool_results(
-    tool_results: list[dict[str, Any]],
+    tool_results: list[
+        dict[str, Any]
+    ],
 ) -> str:
+    """
+    Genera una respuesta determinista basada en datos reales
+    cuando OpenRouter devuelve content vacío.
+    """
+
     if not tool_results:
+
         return (
-            "La consulta se procesó, pero no recibí datos "
-            "suficientes para elaborar una respuesta."
+            "La consulta se procesó, "
+            "pero no recibí datos suficientes."
         )
 
     last = tool_results[-1]
 
-    name = str(last.get("tool") or last.get("name") or "herramienta")
-    args = last.get("arguments") or {}
-    result = last.get("result")
+    tool_name = str(
+        last.get(
+            "tool"
+        )
+        or last.get(
+            "name"
+        )
+        or "herramienta"
+    )
 
-    if not _result_ok(result):
-        error = result.get("error") if isinstance(result, dict) else None
+    arguments = (
+        last.get(
+            "arguments"
+        )
+        or {}
+    )
+
+    result = last.get(
+        "result"
+    )
+
+
+    # =========================================================
+    # ERROR DE TOOL
+    # =========================================================
+
+    if not _result_ok(
+        result
+    ):
+
+        error = None
+
+        if isinstance(
+            result,
+            dict,
+        ):
+            error = result.get(
+                "error"
+            )
+
         return (
-            f"No pude completar la consulta con {name}. "
-            + (f"Detalle: {error}" if error else "")
+            f"No pude completar la operación "
+            f"con {tool_name}."
+            + (
+                f" Detalle: {error}"
+                if error
+                else ""
+            )
+        )
+
+
+    # =========================================================
+    # TOTAL
+    # =========================================================
+
+    count = _extract_count(
+        result
+    )
+
+
+    # =========================================================
+    # SEARCH PUNCHES
+    # =========================================================
+
+    if tool_name == "search_punches":
+
+        query = str(
+            arguments.get(
+                "query"
+            )
+            or ""
         ).strip()
 
-    count = _find_count(result)
+        fecha_desde = str(
+            arguments.get(
+                "fecha_desde"
+            )
+            or ""
+        ).strip()
 
-    if name == "search_punches":
-        query = str(args.get("query") or "").strip()
-        fecha_desde = str(args.get("fecha_desde") or "").strip()
-        fecha_hasta = str(args.get("fecha_hasta") or "").strip()
+        fecha_hasta = str(
+            arguments.get(
+                "fecha_hasta"
+            )
+            or ""
+        ).strip()
+
+
+        sujeto = ""
+
+        if query:
+
+            sujeto = (
+                f" para el código "
+                f"o búsqueda {query}"
+            )
+
 
         periodo = ""
 
-        if fecha_desde and fecha_hasta:
-            periodo = f" entre {fecha_desde} y {fecha_hasta}"
-        elif fecha_desde:
-            periodo = f" desde {fecha_desde}"
-        elif fecha_hasta:
-            periodo = f" hasta {fecha_hasta}"
+        if (
+            fecha_desde
+            and fecha_hasta
+        ):
 
-        sujeto = (
-            f" para el código o búsqueda {query}"
-            if query
-            else ""
-        )
+            if (
+                fecha_desde
+                == fecha_hasta
+            ):
+
+                periodo = (
+                    f" del día "
+                    f"{fecha_desde}"
+                )
+
+            else:
+
+                periodo = (
+                    f" entre "
+                    f"{fecha_desde} "
+                    f"y {fecha_hasta}"
+                )
+
 
         if count is not None:
-            if count > 0:
+
+            if count == 0:
+
                 return (
-                    f"Sí. Encontré {count} registro"
-                    f"{'s' if count != 1 else ''} de ponches"
-                    f"{sujeto}{periodo}."
+                    "No encontré registros "
+                    f"de ponches{sujeto}"
+                    f"{periodo}."
                 )
 
             return (
-                f"No encontré registros de ponches"
-                f"{sujeto}{periodo}."
+                f"Encontré {count} "
+                f"registro"
+                f"{'s' if count != 1 else ''} "
+                f"de ponches"
+                f"{sujeto}"
+                f"{periodo}."
             )
 
-    if name == "search_employee":
-        query = str(args.get("query") or "").strip()
+
+    # =========================================================
+    # SEARCH EMPLOYEE
+    # =========================================================
+
+    if tool_name == "search_employee":
+
+        query = str(
+            arguments.get(
+                "query"
+            )
+            or ""
+        ).strip()
 
         if count is not None:
+
             return (
                 f"Encontré {count} resultado"
                 f"{'s' if count != 1 else ''}"
-                + (f" para {query}." if query else ".")
+                + (
+                    f" para {query}."
+                    if query
+                    else "."
+                )
             )
 
-    if name == "device_health" and isinstance(result, dict):
-        offline = (
-            result.get("offline")
-            or result.get("offline_count")
-            or result.get("relojes_offline")
+
+    # =========================================================
+    # DEVICE HEALTH
+    # =========================================================
+
+    if (
+        tool_name
+        == "device_health"
+        and isinstance(
+            result,
+            dict,
         )
+    ):
 
         online = (
-            result.get("online")
-            or result.get("online_count")
-            or result.get("relojes_online")
+            result.get(
+                "online"
+            )
+            or result.get(
+                "online_count"
+            )
+            or result.get(
+                "relojes_online"
+            )
         )
 
-        if isinstance(offline, int) or isinstance(online, int):
-            parts: list[str] = []
+        offline = (
+            result.get(
+                "offline"
+            )
+            or result.get(
+                "offline_count"
+            )
+            or result.get(
+                "relojes_offline"
+            )
+        )
 
-            if isinstance(online, int):
-                parts.append(f"{online} en línea")
 
-            if isinstance(offline, int):
-                parts.append(f"{offline} fuera de línea")
+        parts: list[str] = []
 
-            if parts:
-                return "Estado de relojes: " + ", ".join(parts) + "."
+        if isinstance(
+            online,
+            int,
+        ):
+
+            parts.append(
+                f"{online} en línea"
+            )
+
+        if isinstance(
+            offline,
+            int,
+        ):
+
+            parts.append(
+                f"{offline} fuera de línea"
+            )
+
+        if parts:
+
+            return (
+                "Estado actual de los relojes: "
+                + ", ".join(
+                    parts
+                )
+                + "."
+            )
+
+
+    # =========================================================
+    # RESPUESTA PROPORCIONADA POR LA TOOL
+    # =========================================================
+
+    if isinstance(
+        result,
+        dict,
+    ):
+
+        for key in (
+            "message",
+            "respuesta",
+            "detail",
+        ):
+
+            value = result.get(
+                key
+            )
+
+            if (
+                isinstance(
+                    value,
+                    str,
+                )
+                and value.strip()
+            ):
+
+                return clean_user_text(
+                    value
+                )
+
+
+    # =========================================================
+    # FALLBACK FINAL
+    # =========================================================
 
     if count is not None:
+
         return (
-            f"La herramienta {name} se ejecutó correctamente "
-            f"y devolvió {count} registro"
+            f"La operación {tool_name} "
+            f"devolvió {count} registro"
             f"{'s' if count != 1 else ''}."
         )
 
-    if isinstance(result, dict):
-        message = (
-            result.get("message")
-            or result.get("respuesta")
-            or result.get("detail")
-        )
-
-        if isinstance(message, str) and message.strip():
-            return clean_user_text(message)
-
-    return f"La herramienta {name} se ejecutó correctamente."
+    return (
+        f"La herramienta {tool_name} "
+        "se ejecutó correctamente."
+    )
 
 
 def compact_tool_result(
     value: Any,
     max_chars: int = 12000,
 ) -> str:
+    """
+    Evita enviar resultados gigantes a OpenRouter.
+    """
+
     try:
+
         text = json.dumps(
             value,
             ensure_ascii=False,
             default=str,
         )
-    except Exception:
-        text = str(value)
 
-    if len(text) <= max_chars:
+    except Exception:
+
+        text = str(
+            value
+        )
+
+    if len(
+        text
+    ) <= max_chars:
+
         return text
 
-    return text[:max_chars] + "...[resultado truncado]"
+    return (
+        text[
+            :max_chars
+        ]
+        + "...[resultado truncado]"
+    )

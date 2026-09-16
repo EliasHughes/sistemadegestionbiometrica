@@ -10,7 +10,7 @@ from google.genai import types
 
 from app.services.fiorella_audit import audit
 from app.services.fiorella_memory import get_or_create_conversation, load_history, save_message
-from app.services import fiorella_tools as tools
+from app.services import fiorella_tools_modules as tools
 
 load_dotenv()
 

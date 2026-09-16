@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import json
 import uuid
+
 from datetime import datetime, timedelta
 from typing import Any
 
 from app.core.permissions import has_permission
-from app.services.database import execute, fetch_all, test_connection
+from app.services.database import (
+    execute,
+    fetch_all,
+    test_connection,
+)
+
 from app.services.fiorella_audit import audit
 
 

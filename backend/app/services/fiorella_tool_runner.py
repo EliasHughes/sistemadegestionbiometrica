@@ -1,56 +1,141 @@
-# backend/app/services/fiorella_tool_runner.py
 from __future__ import annotations
 
 import json
 import logging
 from typing import Any
 
-from app.services.fiorella_openrouter import generate
+from app.services.fiorella_openrouter import (
+    generate,
+)
+
 from app.services.fiorella_response_utils import (
     compact_tool_result,
     fallback_from_tool_results,
 )
-from app.services.fiorella_tool_parser import parse_text_tool_calls
+
+from app.services.fiorella_time import (
+    apply_temporal_args,
+)
+
+from app.services.fiorella_tool_parser import (
+    parse_text_tool_calls,
+)
+
 from app.services.fiorella_tool_registry import (
     audit_tool_call,
     execute_tool,
 )
 
-log = logging.getLogger("fiorella")
 
+log = logging.getLogger(
+    "fiorella"
+)
+
+
+# ============================================================
+# JSON ARGUMENTS
+# ============================================================
 
 def _safe_json_arguments(
     raw_arguments: str | None,
 ) -> dict[str, Any]:
-    try:
-        parsed = json.loads(raw_arguments or "{}")
-        return parsed if isinstance(parsed, dict) else {}
-    except Exception:
-        return {}
 
+    try:
+
+        parsed = json.loads(
+            raw_arguments
+            or "{}"
+        )
+
+        if isinstance(
+            parsed,
+            dict,
+        ):
+            return parsed
+
+    except Exception:
+        pass
+
+    return {}
+
+
+# ============================================================
+# TOOL CALL NATIVO
+# ============================================================
 
 async def run_native_tool_calls(
     *,
     assistant_message: Any,
-    messages: list[dict[str, Any]],
-    user: dict[str, Any],
+    messages: list[
+        dict[str, Any]
+    ],
+    user: dict[
+        str,
+        Any,
+    ],
     tools_used: list[str],
-) -> tuple[str, Any]:
-    tool_calls = assistant_message.tool_calls or []
+    user_message: str,
+) -> tuple[
+    str,
+    Any,
+]:
 
+    tool_calls = (
+        assistant_message.tool_calls
+        or []
+    )
+
+
+    # Guardamos la llamada original
     messages.append(
         assistant_message.model_dump(
             exclude_none=True,
         )
     )
 
-    tool_results: list[dict[str, Any]] = []
+
+    tool_results: list[
+        dict[str, Any]
+    ] = []
+
 
     for call in tool_calls:
-        name = str(call.function.name)
-        args = _safe_json_arguments(
-            call.function.arguments or "{}"
+
+        name = str(
+            call.function.name
         )
+
+
+        args = (
+            _safe_json_arguments(
+                call.function.arguments
+                or "{}"
+            )
+        )
+
+
+        # =====================================================
+        # NORMALIZACIÓN TEMPORAL
+        # =====================================================
+
+        args = apply_temporal_args(
+            name,
+            args,
+            user_message,
+        )
+
+
+        log.info(
+            "Fiorella tool normalizada "
+            "tool=%s args=%s",
+            name,
+            args,
+        )
+
+
+        # =====================================================
+        # EJECUTAR
+        # =====================================================
 
         result = execute_tool(
             name,
@@ -58,7 +143,11 @@ async def run_native_tool_calls(
             user,
         )
 
-        tools_used.append(name)
+
+        tools_used.append(
+            name
+        )
+
 
         audit_tool_call(
             user,
@@ -66,6 +155,7 @@ async def run_native_tool_calls(
             args,
             result,
         )
+
 
         tool_results.append(
             {
@@ -75,23 +165,54 @@ async def run_native_tool_calls(
             }
         )
 
+
+        # =====================================================
+        # RESPUESTA PARA OPENROUTER
+        # =====================================================
+
         messages.append(
             {
                 "role": "tool",
-                "tool_call_id": call.id,
-                "content": compact_tool_result(result),
+                "tool_call_id": (
+                    call.id
+                ),
+                "content": (
+                    compact_tool_result(
+                        result
+                    )
+                ),
             }
         )
 
-    final_response = await generate(
-        messages,
-        use_tools=False,
+
+    # =========================================================
+    # SEGUNDA LLAMADA AL MODELO
+    # =========================================================
+
+    final_response = (
+        await generate(
+            messages,
+            use_tools=False,
+        )
     )
 
+
     if not final_response.choices:
-        raise RuntimeError(
-            "OpenRouter no devolvió respuesta después de tools."
+
+        # Tenemos resultado real:
+        # no debemos fallar solo porque el LLM no respondió.
+
+        fallback = (
+            fallback_from_tool_results(
+                tool_results
+            )
         )
+
+        return (
+            fallback,
+            final_response,
+        )
+
 
     raw = (
         final_response
@@ -101,102 +222,170 @@ async def run_native_tool_calls(
         or ""
     ).strip()
 
+
+    # =========================================================
+    # MODELO RESPONDIÓ VACÍO
+    # =========================================================
+
     if not raw:
-        raw = fallback_from_tool_results(
-            tool_results,
+
+        raw = (
+            fallback_from_tool_results(
+                tool_results
+            )
         )
+
 
         log.warning(
-            "OpenRouter devolvió content vacío después de tools; "
-            "se utilizó respuesta determinista."
+            "OpenRouter respondió content vacío "
+            "después de tools. "
+            "Usando respuesta determinista."
         )
 
-    return raw, final_response
 
+    return (
+        raw,
+        final_response,
+    )
+
+
+# ============================================================
+# TOOL CALL TEXTUAL
+# ============================================================
 
 async def run_text_tool_calls(
     *,
     assistant_content: str,
-    messages: list[dict[str, Any]],
-    user: dict[str, Any],
+    messages: list[
+        dict[str, Any]
+    ],
+    user: dict[
+        str,
+        Any,
+    ],
     tools_used: list[str],
-) -> tuple[str, Any]:
-    text_calls = parse_text_tool_calls(
-        assistant_content,
+    user_message: str,
+) -> tuple[
+    str,
+    Any,
+]:
+
+    text_calls = (
+        parse_text_tool_calls(
+            assistant_content
+        )
     )
 
+
     if not text_calls:
+
         raise RuntimeError(
-            "Se solicitó fallback textual sin tool calls."
+            "Fallback textual invocado "
+            "sin tool calls."
         )
 
-    tool_results: list[dict[str, Any]] = []
+
+    tool_results: list[
+        dict[str, Any]
+    ] = []
+
 
     for call in text_calls:
-        log.warning(
-            "Fiorella recibió tool_call textual tool=%s args=%s",
+
+        args = apply_temporal_args(
             call.name,
             call.arguments,
+            user_message,
         )
+
+
+        log.warning(
+            "Tool textual detectada "
+            "tool=%s args=%s",
+            call.name,
+            args,
+        )
+
 
         result = execute_tool(
             call.name,
-            call.arguments,
+            args,
             user,
         )
 
-        tools_used.append(call.name)
+
+        tools_used.append(
+            call.name
+        )
+
 
         audit_tool_call(
             user,
             call.name,
-            call.arguments,
+            args,
             result,
         )
 
+
         tool_results.append(
             {
-                "tool": call.name,
-                "arguments": call.arguments,
+                "tool": (
+                    call.name
+                ),
+                "arguments": args,
                 "result": result,
             }
         )
+
+
+    # =========================================================
+    # CONTEXTO INTERNO
+    # =========================================================
 
     messages.append(
         {
             "role": "assistant",
             "content": (
-                "Necesito consultar una herramienta interna "
-                "antes de responder."
+                "Necesito consultar datos "
+                "internos antes de responder."
             ),
         }
     )
+
 
     messages.append(
         {
             "role": "user",
             "content": (
                 "RESULTADO INTERNO DE HERRAMIENTAS.\n"
-                "Estos datos provienen del backend y son la fuente "
-                "de verdad para responder.\n"
-                "No muestres etiquetas tool_call ni XML.\n\n"
+                "Estos datos vienen del backend "
+                "y son la fuente de verdad.\n"
+                "No muestres XML ni tool_call.\n\n"
                 + compact_tool_result(
-                    tool_results,
+                    tool_results
                 )
             ),
         }
     )
 
-    final_response = await generate(
-        messages,
-        use_tools=False,
+
+    final_response = (
+        await generate(
+            messages,
+            use_tools=False,
+        )
     )
 
+
     if not final_response.choices:
-        raise RuntimeError(
-            "OpenRouter no devolvió respuesta "
-            "después del fallback de tools."
+
+        return (
+            fallback_from_tool_results(
+                tool_results
+            ),
+            final_response,
         )
+
 
     raw = (
         final_response
@@ -206,14 +395,23 @@ async def run_text_tool_calls(
         or ""
     ).strip()
 
+
     if not raw:
-        raw = fallback_from_tool_results(
-            tool_results,
+
+        raw = (
+            fallback_from_tool_results(
+                tool_results
+            )
         )
+
 
         log.warning(
-            "OpenRouter devolvió content vacío después del "
-            "fallback textual; se utilizó respuesta determinista."
+            "OpenRouter devolvió content vacío "
+            "después de tool textual."
         )
 
-    return raw, final_response
+
+    return (
+        raw,
+        final_response,
+    )

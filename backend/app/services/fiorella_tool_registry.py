@@ -6,7 +6,9 @@ from typing import Any
 
 from app.services import fiorella_tools as tools
 from app.services.fiorella_audit import audit
-
+from app.services.fiorella_tools_modules import (
+    export_punches_excel,
+)
 log = logging.getLogger("fiorella")
 
 
@@ -165,7 +167,53 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "additionalProperties": False,
                 },
             },
+        },{
+    "type": "function",
+
+    "function": {
+
+        "name": "export_punches_excel",
+
+        "description": (
+            "Genera un archivo Excel "
+            "con registros reales de ponches "
+            "filtrados por código, fechas "
+            "o dispositivo."
+        ),
+
+        "parameters": {
+
+            "type": "object",
+
+            "properties": {
+
+                "query": {
+                    "type": "string",
+                },
+
+                "fecha_desde": {
+                    "type": "string",
+                },
+
+                "fecha_hasta": {
+                    "type": "string",
+                },
+
+                "dispositivo": {
+                    "type": "string",
+                },
+
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 5000,
+                },
+            },
+
+            "additionalProperties": False,
         },
+    },
+},
         {
             "type": "function",
             "function": {
@@ -233,6 +281,13 @@ def execute_tool(
                 name,
                 args,
             )
+        
+        if name == "export_punches_excel":
+
+         return export_punches_excel(
+        user,
+        **args,
+    )
 
         return {
             "ok": False,
@@ -244,6 +299,7 @@ def execute_tool(
             "Error ejecutando herramienta %s",
             name,
         )
+        
 
         return {
             "ok": False,

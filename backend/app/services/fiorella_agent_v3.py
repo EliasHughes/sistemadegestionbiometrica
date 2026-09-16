@@ -199,13 +199,14 @@ async def procesar_mensaje_usuario(
 
         if native_calls:
             raw, final_response = (
-                await run_native_tool_calls(
-                    assistant_message=assistant_message,
-                    messages=messages,
-                    user=user,
-                    tools_used=tools_used,
+                    await run_native_tool_calls(
+                        assistant_message=assistant_message,
+                        messages=messages,
+                        user=user,
+                        tools_used=tools_used,
+                        user_message=message,
+                    )
                 )
-            )
 
             used_model = actual_model(
                 final_response,
@@ -223,6 +224,7 @@ async def procesar_mensaje_usuario(
                         messages=messages,
                         user=user,
                         tools_used=tools_used,
+                        user_message=message,
                     )
                 )
 

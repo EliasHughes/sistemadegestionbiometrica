@@ -153,10 +153,12 @@ def parse_response(
         pass
 
     return {
-        "respuesta": clean_user_text(text),
-        "animacion": "point",
-        "action": None,
-    }
+    "respuesta": clean_user_text(
+        text
+    ),
+    "animacion": "point",
+    "action": None,
+}
 
 
 def actual_model(
