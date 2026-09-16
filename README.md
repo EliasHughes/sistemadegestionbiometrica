@@ -1,4 +1,4 @@
-# PocheNuevaVersion
+# sistema de gestion biometrica
 
 Sistema de visualización, control y sincronización de ponches.
 
@@ -30,9 +30,9 @@ npm install
 npm run dev
 ```
 
-Frontend: http://localhost:3007  
-API: http://127.0.0.1:8012/api/health  
-Docs (solo no-producción): http://127.0.0.1:8012/docs
+Frontend: http://localhost:3015 
+API: http://127.0.0.1:8015/api/health  
+Docs (solo no-producción): http://127.0.0.1:8015/docs
 
 ```bat
 cd backend
